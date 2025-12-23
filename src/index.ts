@@ -20,11 +20,11 @@ export interface ServicetradeClientOptions {
     clientId?: string;
     clientSecret?: string;
     token?: BearerToken;
-    refreshToken?: BearerToken;
 }
 
 interface Credentials {
     grant_type: string;
+    refresh_token?: string;
     client_id?: string;
     client_secret?: string;
     username?: string;
@@ -49,7 +49,6 @@ export default class ServicetradeClient {
     private onUnsetAuth: (() => void);
     private autoRefreshAuth: boolean;
     private token?: BearerToken;
-    private refreshToken?: BearerToken;
     private creds: Credentials;
 
     constructor(options: ServicetradeClientOptions) {
@@ -60,7 +59,6 @@ export default class ServicetradeClient {
         this.onSetAuth       = options.onSetAuth       ?? NOOP;
         this.onUnsetAuth     = options.onUnsetAuth     ?? NOOP;
         this.autoRefreshAuth = options.autoRefreshAuth ?? true;
-        this.refreshToken    = options.refreshToken;
         this.token           = options.token;
         this.creds           = this.getCredentials(options);
 
@@ -158,11 +156,11 @@ export default class ServicetradeClient {
     }
 
     private async attemptRevokeRefreshToken() {
-        if (!this.refreshToken)
+        if (!this.creds.refresh_token)
             return;
 
         try {
-            await this.authRequest.post('/oauth2/revoke', { refresh_token: this.refreshToken });
+            await this.authRequest.post('/oauth2/revoke', { refresh_token: this.creds.refresh_token });
         } catch (error) {
             // If we can't revoke the refresh token, just let it expire.
         }
@@ -197,8 +195,8 @@ export default class ServicetradeClient {
         this.token = token;
         this.request.defaults.headers.Authorization = `Bearer ${token}`;
 
-        if (refreshToken) {
-            this.refreshToken = refreshToken;
+        if (this.creds.refresh_token) {
+            this.creds.refresh_token = refreshToken;
         }
 
         this.onSetAuth(this.token);
@@ -206,10 +204,7 @@ export default class ServicetradeClient {
 
     async logout() {
         delete this.request.defaults.headers.Authorization;
-
-        if (this.refreshToken) {
-            await this.attemptRevokeRefreshToken();
-        }
+        await this.attemptRevokeRefreshToken();
         this.onUnsetAuth();
     }
 

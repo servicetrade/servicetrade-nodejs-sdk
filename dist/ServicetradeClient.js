@@ -66,11 +66,11 @@ class ServicetradeClient {
     }
     async logout() {
         await this.doLogout();
-        this.clearAuth();
+        this.request.defaults.headers.Authorization = null;
         this.onUnsetAuth();
     }
     async refreshAuth() {
-        this.clearAuth();
+        this.request.defaults.headers.Authorization = null;
         this.onUnsetAuth();
         return this.login();
     }

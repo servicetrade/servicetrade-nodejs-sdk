@@ -48,6 +48,19 @@ describe('ServicetradeClient - Constructor tests', function() {
         assert.strictEqual(ST['creds'].client_secret, 'test_client_secret');
     });
 
+    it('Creates client with refresh token credentials', function() {
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            refreshToken: 'test_refresh_token',
+        });
+        assert.ok(ST);
+        assert.strictEqual(ST['creds'].grant_type, 'refresh_token');
+        assert.strictEqual((ST['creds'] as any).refresh_token, 'test_refresh_token');
+        // Should not store client_id and client_secret when using refresh token
+        assert.strictEqual(ST['creds'].client_id, undefined);
+        assert.strictEqual(ST['creds'].client_secret, undefined);
+    });
+
     it('Throws error when no credentials provided', function() {
         try {
             new ServicetradeClient(badOptions as any);
@@ -94,10 +107,8 @@ describe('ServicetradeClient - Login tests', function() {
                 password: 'test_pass',
             })
             .reply(200, {
-                data: {
-                    access_token: 'abcd1234wxyz',
-                    token_type: 'Bearer'
-                }
+                access_token: 'abcd1234wxyz',
+                token_type: 'Bearer'
             });
 
         const ST = new ServicetradeClient(passwordOptions);
@@ -113,15 +124,35 @@ describe('ServicetradeClient - Login tests', function() {
                 client_secret: 'test_client_secret',
             })
             .reply(200, {
-                data: {
-                    access_token: 'xyz9876abcd',
-                    token_type: 'Bearer'
-                }
+                access_token: 'xyz9876abcd',
+                token_type: 'Bearer'
             });
 
         const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer xyz9876abcd');
+    });
+
+    it('Successful login with refresh token returns new token', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                refresh_token: 'test_refresh_token',
+            })
+            .reply(200, {
+                access_token: 'new-access-token',
+                refresh_token: 'new-refresh-token'
+            });
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
+            clientSecret: 'test_client_secret',
+            refreshToken: 'test_refresh_token',
+        });
+        await ST.login();
+        assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer new-access-token');
+        assert.strictEqual(ST['refreshToken'], 'new-refresh-token');
     });
 
     it('Failed login throws error', async function() {
@@ -149,9 +180,7 @@ describe('ServicetradeClient - Login tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'callback-token'
-                }
+                access_token: 'callback-token'
             });
 
         let capturedToken: string | undefined;
@@ -167,20 +196,31 @@ describe('ServicetradeClient - Login tests', function() {
 
     it('Auth again if call returns 401 error', async function() {
         nock('https://test.host.com')
-            .get(`/api/job/100`)
-            .reply(401)
-
+            // First login from refreshIfStale (no token)
             .post('/api/oauth2/token', {
                 grant_type: 'password',
                 username: 'test_user',
                 password: 'test_pass',
             })
             .reply(200, {
-                data: {
-                    access_token: 'refreshed-token'
-                }
+                access_token: 'initial-token'
             })
 
+            // First GET returns 401
+            .get(`/api/job/100`)
+            .reply(401)
+
+            // Re-auth after 401
+            .post('/api/oauth2/token', {
+                grant_type: 'password',
+                username: 'test_user',
+                password: 'test_pass',
+            })
+            .reply(200, {
+                access_token: 'refreshed-token'
+            })
+
+            // Retry GET succeeds
             .get(`/api/job/100`)
             .reply(200, {
                 data: {
@@ -191,7 +231,7 @@ describe('ServicetradeClient - Login tests', function() {
         const ST = new ServicetradeClient(passwordOptions);
         const jobResponse = await ST.get('/job/100');
         assert.strictEqual(typeof jobResponse, 'object');
-        assert.strictEqual(jobResponse.id, 100);
+        assert.strictEqual(jobResponse!.id, 100);
     });
 });
 
@@ -200,9 +240,7 @@ describe('ServicetradeClient - Logout tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             });
 
         const ST = new ServicetradeClient(passwordOptions);
@@ -210,7 +248,23 @@ describe('ServicetradeClient - Logout tests', function() {
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer test-token');
 
         await ST.logout();
-        assert.strictEqual(ST['request'].defaults.headers.Authorization, null);
+        assert.strictEqual(ST['request'].defaults.headers.Authorization, undefined);
+    });
+
+    it('Logout revokes refresh token if present', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, {
+                access_token: 'test-token',
+                refresh_token: 'test-refresh-token'
+            })
+            .post('/api/oauth2/revoke', { refresh_token: 'test-refresh-token' })
+            .reply(200, {});
+
+        const ST = new ServicetradeClient(passwordOptions);
+        await ST.login();
+        await ST.logout();
+        assert.strictEqual(ST['request'].defaults.headers.Authorization, undefined);
     });
 
     it('Logout calls onUnsetAuth callback', async function() {
@@ -234,9 +288,7 @@ describe('ServicetradeClient - Get tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .get(`/api/job/${testJobId}`)
@@ -251,16 +303,14 @@ describe('ServicetradeClient - Get tests', function() {
         await ST.login();
         const jobResponse = await ST.get(`job/${testJobId}`);
         assert.strictEqual(typeof jobResponse, 'object');
-        assert.strictEqual(jobResponse.id, testJobId);
+        assert.strictEqual(jobResponse!.id, testJobId);
     });
 
     it('return empty response cause no data property', async function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .get(`/api/job/${testJobId}`)
@@ -281,9 +331,7 @@ describe('ServicetradeClient - Put tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .put(`/api/jobitem/${jobItemId}`, { libitemId: 9876 })
@@ -293,16 +341,14 @@ describe('ServicetradeClient - Put tests', function() {
         const ST = new ServicetradeClient(passwordOptions);
         await ST.login();
         const jobItemResponse = await ST.put(`/jobitem/${jobItemId}`, { libitemId: 9876 });
-        assert.strictEqual(jobItemResponse.id, 1234);
+        assert.strictEqual(jobItemResponse!.id, 1234);
     });
 
     it('return empty response cause no data property', async function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .put(`/api/jobitem/${jobItemId}`, { libitemId: 9876 })
@@ -329,9 +375,7 @@ describe('ServicetradeClient - Post tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .post('/api/jobitem', postData)
@@ -341,16 +385,14 @@ describe('ServicetradeClient - Post tests', function() {
         const ST = new ServicetradeClient(passwordOptions);
         await ST.login();
         const jobItemResponse = await ST.post(`/jobitem`, postData);
-        assert.strictEqual(jobItemResponse.id, 444);
+        assert.strictEqual(jobItemResponse!.id, 444);
     });
 
     it('return empty response cause no data property', async function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .post(`/api/jobitem/${jobItemId}`, { libitemId: 9876 })
@@ -369,9 +411,7 @@ describe('ServicetradeClient - Delete tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .delete(`/api/job/${testJobId}`)
@@ -390,9 +430,7 @@ describe('ServicetradeClient - Attach tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')
             .reply(200, {
-                data: {
-                    access_token: 'test-token'
-                }
+                access_token: 'test-token'
             })
 
             .post('/api/attachment')
@@ -435,6 +473,12 @@ describe('ServicetradeClient - Attach tests', function() {
 describe('ServicetradeClient - check userAgent header', function() {
     it('test userAgent success', async function() {
         nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .matchHeader('User-Agent', 'Test UserAgent')
+            .reply(200, {
+                access_token: 'test-token'
+            })
+
             .delete(`/api/job/100`)
             .matchHeader('User-Agent', 'Test UserAgent')
             .reply(200, {});
@@ -447,6 +491,11 @@ describe('ServicetradeClient - check userAgent header', function() {
 describe('ServicetradeClient - setCustomHeader tests', function() {
     it('test setCustomHeader success', async function() {
         nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, {
+                access_token: 'test-token'
+            })
+
             .delete(`/api/job/100`)
             .matchHeader('X-Custom-Header', 'customValue')
             .reply(200, {});
@@ -458,6 +507,11 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
 
     it('test setCustomHeader with multiple headers', async function() {
         nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, {
+                access_token: 'test-token'
+            })
+
             .delete(`/api/job/100`)
             .matchHeader('X-API-Key', 'apiKey123')
             .matchHeader('X-Client-Version', '1.0.0')
@@ -471,6 +525,11 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
 
     it('test setCustomHeader overwrites existing header', async function() {
         nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, {
+                access_token: 'test-token'
+            })
+
             .delete(`/api/job/100`)
             .matchHeader('X-Custom-Header', 'newValue')
             .reply(200, {});
@@ -483,6 +542,11 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
 
     it('test setCustomHeader with empty value', async function() {
         nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, {
+                access_token: 'test-token'
+            })
+
             .delete(`/api/job/100`)
             .matchHeader('X-Empty-Header', '')
             .reply(200, {});

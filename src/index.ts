@@ -19,6 +19,7 @@ export interface ServicetradeClientOptions {
     password?: string;
     clientId?: string;
     clientSecret?: string;
+    refreshToken?: string;
     token?: BearerToken;
 }
 
@@ -49,6 +50,7 @@ export default class ServicetradeClient {
     private onUnsetAuth: (() => void);
     private autoRefreshAuth: boolean;
     private token?: BearerToken;
+    private refreshToken?: string;
     private creds: Credentials;
 
     constructor(options: ServicetradeClientOptions) {
@@ -193,6 +195,7 @@ export default class ServicetradeClient {
 
     private setToken([token, refreshToken]: [BearerToken, BearerToken]) {
         this.token = token;
+        this.refreshToken = refreshToken;
         this.request.defaults.headers.Authorization = `Bearer ${token}`;
 
         if (this.creds.refresh_token) {

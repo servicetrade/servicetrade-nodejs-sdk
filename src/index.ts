@@ -10,7 +10,7 @@ const TOKEN_TTL_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface ServicetradeClientOptions {
     baseUrl?: string;   /** The API base URL (without /api) */
-    apiPrefix?: string; /** Api prefix  */
+    apiPrefix?: string; /** API prefix */
     userAgent?: string; /** Custom User-Agent header */
     onSetAuth?: (auth: BearerToken) => void; /** Callback when authentication is set */
     onUnsetAuth?: () => void; /** Callback when authentication is unset */
@@ -32,6 +32,8 @@ interface Credentials {
     password?: string;
 }
 
+export type TokenSet = [BearerToken, BearerToken | undefined];
+
 export type ServicetradeClientResponse = Record<string, any>;
 
 export interface FileAttachment {
@@ -50,8 +52,7 @@ export default class ServicetradeClient {
     private onUnsetAuth: (() => void);
     private autoRefreshAuth: boolean;
     private token?: BearerToken;
-    private refreshToken?: string;
-    private creds: Credentials;
+    private creds?: Credentials;
 
     constructor(options: ServicetradeClientOptions) {
 
@@ -78,9 +79,9 @@ export default class ServicetradeClient {
             headers: { 'User-Agent': this.userAgent },
         });
 
-        this.request.interceptors.response.use(this.unpackResponse.bind(this));
+        this.request.interceptors.response.use(this.unpackResponse.bind(this) as any);
 
-        if (this.autoRefreshAuth) {
+        if (this.autoRefreshAuth && this.creds) {
             createAuthRefreshInterceptor(this.request, this.login.bind(this));
         }
 
@@ -118,7 +119,7 @@ export default class ServicetradeClient {
         return this.request.delete<ServicetradeClientResponse>(path);
     }
 
-    async attach(params: Record<string, any>, file: FileAttachment): Promise<ServicetradeClientResponse> {
+    async attach(params: Record<string, any>, file: FileAttachment): Promise<ServicetradeClientResponse | null> {
         await this.refreshIfStale();
         const formData = new FormData();
         for (const [k, v] of Object.entries(params || {})) {
@@ -133,12 +134,12 @@ export default class ServicetradeClient {
             }
         };
 
-        return this.request.post('/attachment', formData, formDataConfig) as unknown as ServicetradeClientResponse;
+        return this.request.post('/attachment', formData, formDataConfig) as Promise<ServicetradeClientResponse | null>;
     }
 
-    // Intentially only keep the minimal set of credentials required for maintaining connection.
+    // Intentionally only keep the minimal set of credentials required for maintaining connection.
     // If I have a refresh token -- I will not store client_id and client_secret in memory even if you decide to provide them.
-    private getCredentials({username, password, clientId, clientSecret, refreshToken}: ServicetradeClientOptions) {
+    private getCredentials({username, password, clientId, clientSecret, refreshToken, token}: ServicetradeClientOptions) {
         if (refreshToken)
             return { grant_type: 'refresh_token', refresh_token: refreshToken };
 
@@ -148,17 +149,38 @@ export default class ServicetradeClient {
         if (username && password)
             return { grant_type: 'password', username, password };
 
-        throw new Error('Username and password or clientId and clientSecret are required');
+        if (token)
+            return undefined;
+
+        throw new Error('No valid credentials provided. Required: username/password or clientId/clientSecret or refreshToken');
     }
 
-    private async refresh(): Promise<[BearerToken, BearerToken]> {
+    // This is a mutex to ensure that only one re-auth method is attempted at a time.
+    private refreshMutex: Promise<TokenSet> | null = null;
+    private async refresh(): Promise<TokenSet> {
+        if (!this.refreshMutex) {
+            this.refreshMutex = this.refreshInternal().finally(() => {
+                this.refreshMutex = null;
+            });
+        }
+        return this.refreshMutex;
+    }
+
+
+    private async refreshInternal(): Promise<TokenSet> {
+        if (!this.creds) {
+            throw new Error('No credentials available to authenticate. Provide username/password, clientId/clientSecret, or refreshToken.');
+        }
         const response = await this.authRequest.post('/oauth2/token', this.creds);
         const result = response.data;
+        if (!result.access_token) {
+            throw new Error('Failed to re-authenticate');
+        }
         return [result.access_token, result?.refresh_token];
     }
 
     private async attemptRevokeRefreshToken() {
-        if (!this.creds.refresh_token)
+        if (!this.creds?.refresh_token)
             return;
 
         try {
@@ -166,12 +188,16 @@ export default class ServicetradeClient {
         } catch (error) {
             // If we can't revoke the refresh token, just let it expire.
         }
+        this.creds.refresh_token = undefined;
     }
 
     private async refreshIfStale() {
+        if (!this.autoRefreshAuth) {
+            return;
+        }
         const ttl = this.getTTLForToken();
         if (ttl < TOKEN_TTL_BUFFER_MS) {
-            await this.login();
+            await this.login()
         }
     }
 
@@ -182,41 +208,38 @@ export default class ServicetradeClient {
 
         try {
             const payload = this.token.split('.')[1];
-            const decoded = Buffer.from(payload, 'base64').toString('utf8');
+            // Base64 URL to standard Base64
+            const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+            const decoded = Buffer.from(base64, 'base64').toString('utf8');
             const parsed = JSON.parse(decoded);
             const expiresAt = new Date(parsed.exp * 1000);
             return expiresAt.getTime() - Date.now();
         } catch (error) {
-            // If we can't get the expiraration time, just let the auth layer tell us when it is bad.
+            // If we can't get the expiration time, just let the auth layer tell us when it is bad.
             // This way we don't spam auth if we dont need to.
             return Number.MAX_SAFE_INTEGER;
         }
     }
 
-    private setToken([token, refreshToken]: [BearerToken, BearerToken]) {
+    private setToken([token, refreshToken]: [BearerToken, BearerToken | undefined]) {
         this.token = token;
-        this.refreshToken = refreshToken;
         this.request.defaults.headers.Authorization = `Bearer ${token}`;
 
-        if (this.creds.refresh_token) {
-            this.creds.refresh_token = refreshToken;
+        if (refreshToken && this.creds) {
+            this.creds = { grant_type: 'refresh_token', refresh_token: refreshToken };
         }
 
         this.onSetAuth(this.token);
     }
 
     async logout() {
+        this.token = undefined;
         delete this.request.defaults.headers.Authorization;
         await this.attemptRevokeRefreshToken();
         this.onUnsetAuth();
     }
 
     async login() {
-        if (this.request.defaults.headers.Authorization) {
-            delete this.request.defaults.headers.Authorization;
-            this.onUnsetAuth();
-        }
-
         this.setToken(await this.refresh());
     }
 }

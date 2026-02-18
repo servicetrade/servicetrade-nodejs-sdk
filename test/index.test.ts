@@ -35,17 +35,17 @@ describe('ServicetradeClient - Constructor tests', function() {
     it('Creates client with username/password credentials', function() {
         const ST = new ServicetradeClient(passwordOptions);
         assert.ok(ST);
-        assert.strictEqual(ST['creds'].grant_type, 'password');
-        assert.strictEqual(ST['creds'].username, 'test_user');
-        assert.strictEqual(ST['creds'].password, 'test_pass');
+        assert.strictEqual(ST['creds']!.grant_type, 'password');
+        assert.strictEqual(ST['creds']!.username, 'test_user');
+        assert.strictEqual(ST['creds']!.password, 'test_pass');
     });
 
     it('Creates client with client credentials', function() {
         const ST = new ServicetradeClient(clientCredentialsOptions);
         assert.ok(ST);
-        assert.strictEqual(ST['creds'].grant_type, 'client_credentials');
-        assert.strictEqual(ST['creds'].client_id, 'test_client_id');
-        assert.strictEqual(ST['creds'].client_secret, 'test_client_secret');
+        assert.strictEqual(ST['creds']!.grant_type, 'client_credentials');
+        assert.strictEqual(ST['creds']!.client_id, 'test_client_id');
+        assert.strictEqual(ST['creds']!.client_secret, 'test_client_secret');
     });
 
     it('Creates client with refresh token credentials', function() {
@@ -54,11 +54,11 @@ describe('ServicetradeClient - Constructor tests', function() {
             refreshToken: 'test_refresh_token',
         });
         assert.ok(ST);
-        assert.strictEqual(ST['creds'].grant_type, 'refresh_token');
+        assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
         assert.strictEqual((ST['creds'] as any).refresh_token, 'test_refresh_token');
         // Should not store client_id and client_secret when using refresh token
-        assert.strictEqual(ST['creds'].client_id, undefined);
-        assert.strictEqual(ST['creds'].client_secret, undefined);
+        assert.strictEqual(ST['creds']!.client_id, undefined);
+        assert.strictEqual(ST['creds']!.client_secret, undefined);
     });
 
     it('Throws error when no credentials provided', function() {
@@ -66,7 +66,7 @@ describe('ServicetradeClient - Constructor tests', function() {
             new ServicetradeClient(badOptions as any);
             assert.fail('Should have thrown an error');
         } catch (e: any) {
-            assert.strictEqual(e.message, 'Username and password or clientId and clientSecret are required');
+            assert.strictEqual(e.message, 'No valid credentials provided. Required: username/password or clientId/clientSecret or refreshToken');
         }
     });
 
@@ -81,6 +81,16 @@ describe('ServicetradeClient - Constructor tests', function() {
             token: 'preset-token'
         });
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer preset-token');
+    });
+
+    it('Creates client with token only', function() {
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            token: 'preset-token',
+        });
+        assert.ok(ST);
+        assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer preset-token');
+        assert.strictEqual(ST['creds'], undefined);
     });
 
     it('Client has expected methods', function() {
@@ -152,7 +162,40 @@ describe('ServicetradeClient - Login tests', function() {
         });
         await ST.login();
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer new-access-token');
-        assert.strictEqual(ST['refreshToken'], 'new-refresh-token');
+        assert.strictEqual(ST['creds']!.refresh_token, 'new-refresh-token');
+    });
+
+    it('Switches to refresh_token grant when server returns a refresh token for a password grant', async function() {
+        nock('https://test.host.com')
+            // First login uses password grant
+            .post('/api/oauth2/token', { grant_type: 'password', username: 'test_user', password: 'test_pass' })
+            .reply(200, { access_token: 'token1', refresh_token: 'server-issued-refresh' })
+            // Second login should now use the refresh token
+            .post('/api/oauth2/token', { grant_type: 'refresh_token', refresh_token: 'server-issued-refresh' })
+            .reply(200, { access_token: 'token2', refresh_token: 'rotated-refresh' });
+
+        const ST = new ServicetradeClient(passwordOptions);
+        await ST.login();
+        assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
+        assert.strictEqual(ST['creds']!.refresh_token, 'server-issued-refresh');
+        await ST.login();
+        assert.strictEqual(ST['creds']!.refresh_token, 'rotated-refresh');
+    });
+
+    it('Uses updated refresh token for subsequent logins', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token', { grant_type: 'refresh_token', refresh_token: 'initial-refresh' })
+            .reply(200, { access_token: 'token1', refresh_token: 'rotated-refresh' })
+            .post('/api/oauth2/token', { grant_type: 'refresh_token', refresh_token: 'rotated-refresh' })
+            .reply(200, { access_token: 'token2', refresh_token: 'rotated-again' });
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            refreshToken: 'initial-refresh',
+        });
+        await ST.login();
+        await ST.login();
+        assert.strictEqual(ST['creds']!.refresh_token, 'rotated-again');
     });
 
     it('Failed login throws error', async function() {
@@ -171,7 +214,42 @@ describe('ServicetradeClient - Login tests', function() {
             await ST.login();
             assert.fail('Should have thrown an error');
         } catch (e: any) {
-            assert.strictEqual(e.name, 'Error');
+            assert.strictEqual(e.name, 'AxiosError');
+            assert.ok(e.message.includes('401'));
+        }
+    });
+
+    it('Token-only client cannot login without credentials', async function() {
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            token: 'preset-token',
+        });
+        try {
+            await ST.login();
+            assert.fail('Should have thrown an error');
+        } catch (e: any) {
+            assert.strictEqual(
+                e.message,
+                'No credentials available to authenticate. Provide username/password, clientId/clientSecret, or refreshToken.'
+            );
+        }
+    });
+
+    it('Token-only client receives original AxiosError on 401, not an internal auth error', async function() {
+        nock('https://test.host.com')
+            .get('/api/job/100')
+            .reply(401, {});
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            token: 'preset-token',
+        });
+
+        try {
+            await ST.get('/job/100');
+            assert.fail('Should have thrown an error');
+        } catch (e: any) {
+            assert.strictEqual(e.name, 'AxiosError', 'Expected the original AxiosError, not an internal auth error');
             assert.ok(e.message.includes('401'));
         }
     });
@@ -194,7 +272,7 @@ describe('ServicetradeClient - Login tests', function() {
         assert.strictEqual(capturedToken, 'callback-token');
     });
 
-    it('Auth again if call returns 401 error', async function() {
+    it('Re-authenticates when call returns 401 error', async function() {
         nock('https://test.host.com')
             // First login from refreshIfStale (no token)
             .post('/api/oauth2/token', {
@@ -233,6 +311,31 @@ describe('ServicetradeClient - Login tests', function() {
         assert.strictEqual(typeof jobResponse, 'object');
         assert.strictEqual(jobResponse!.id, 100);
     });
+
+    it('Does not auto-authenticate when autoRefreshAuth is false', async function() {
+        nock('https://test.host.com')
+            .get('/api/job/100')
+            .reply(401, {});
+
+        const ST = new ServicetradeClient({
+            ...passwordOptions,
+            autoRefreshAuth: false,
+        });
+        let loginCalled = false;
+        ST['login'] = async () => {
+            loginCalled = true;
+            throw new Error('login should not be called');
+        };
+
+        try {
+            await ST.get('/job/100');
+            assert.fail('Should have thrown an error');
+        } catch (e: any) {
+            assert.strictEqual(e.name, 'AxiosError');
+            assert.ok(e.message.includes('401'));
+            assert.strictEqual(loginCalled, false, 'Did not expect login to be called');
+        }
+    });
 });
 
 describe('ServicetradeClient - Logout tests', function() {
@@ -252,19 +355,26 @@ describe('ServicetradeClient - Logout tests', function() {
     });
 
     it('Logout revokes refresh token if present', async function() {
-        nock('https://test.host.com')
-            .post('/api/oauth2/token')
+        const scope = nock('https://test.host.com')
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                refresh_token: 'initial-refresh-token',
+            })
             .reply(200, {
                 access_token: 'test-token',
-                refresh_token: 'test-refresh-token'
+                refresh_token: 'rotated-refresh-token'
             })
-            .post('/api/oauth2/revoke', { refresh_token: 'test-refresh-token' })
+            .post('/api/oauth2/revoke', { refresh_token: 'rotated-refresh-token' })
             .reply(200, {});
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            refreshToken: 'initial-refresh-token',
+        });
         await ST.login();
         await ST.logout();
         assert.strictEqual(ST['request'].defaults.headers.Authorization, undefined);
+        assert.ok(scope.isDone(), 'Expected revoke endpoint to be called');
     });
 
     it('Logout calls onUnsetAuth callback', async function() {
@@ -464,9 +574,9 @@ describe('ServicetradeClient - Attach tests', function() {
             },
             imgAttachment
         );
-        assert.strictEqual(attachResponse.id, 1);
-        assert.strictEqual(attachResponse.uri, 'testUrl');
-        assert.strictEqual(attachResponse.fileName, 'testFileName');
+        assert.strictEqual(attachResponse!.id, 1);
+        assert.strictEqual(attachResponse!.uri, 'testUrl');
+        assert.strictEqual(attachResponse!.fileName, 'testFileName');
     })
 });
 

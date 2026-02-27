@@ -51,13 +51,13 @@ describe('ServicetradeClient - Constructor tests', function() {
     it('Creates client with refresh token credentials', function() {
         const ST = new ServicetradeClient({
             baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
             refreshToken: 'test_refresh_token',
         });
         assert.ok(ST);
         assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
         assert.strictEqual((ST['creds'] as any).refresh_token, 'test_refresh_token');
-        // Should not store client_id and client_secret when using refresh token
-        assert.strictEqual(ST['creds']!.client_id, undefined);
+        assert.strictEqual(ST['creds']!.client_id, 'test_client_id');
         assert.strictEqual(ST['creds']!.client_secret, undefined);
     });
 
@@ -147,6 +147,7 @@ describe('ServicetradeClient - Login tests', function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token', {
                 grant_type: 'refresh_token',
+                client_id: 'test_client_id',
                 refresh_token: 'test_refresh_token',
             })
             .reply(200, {
@@ -163,6 +164,32 @@ describe('ServicetradeClient - Login tests', function() {
         await ST.login();
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer new-access-token');
         assert.strictEqual(ST['creds']!.refresh_token, 'new-refresh-token');
+    });
+
+    it('Always passes client_id for refresh_token grant requests, including rotated refresh tokens', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                client_id: 'test_client_id',
+                refresh_token: 'initial-refresh',
+            })
+            .reply(200, { access_token: 'token1', refresh_token: 'rotated-refresh' })
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                client_id: 'test_client_id',
+                refresh_token: 'rotated-refresh',
+            })
+            .reply(200, { access_token: 'token2', refresh_token: 'rotated-again' });
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
+            refreshToken: 'initial-refresh',
+        });
+        await ST.login();
+        await ST.login();
+        assert.strictEqual(ST['creds']!.refresh_token, 'rotated-again');
+        assert.strictEqual(ST['creds']!.client_id, 'test_client_id');
     });
 
     it('Switches to refresh_token grant when server returns a refresh token for a password grant', async function() {
@@ -184,13 +211,22 @@ describe('ServicetradeClient - Login tests', function() {
 
     it('Uses updated refresh token for subsequent logins', async function() {
         nock('https://test.host.com')
-            .post('/api/oauth2/token', { grant_type: 'refresh_token', refresh_token: 'initial-refresh' })
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                client_id: 'test_client_id',
+                refresh_token: 'initial-refresh'
+            })
             .reply(200, { access_token: 'token1', refresh_token: 'rotated-refresh' })
-            .post('/api/oauth2/token', { grant_type: 'refresh_token', refresh_token: 'rotated-refresh' })
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                client_id: 'test_client_id',
+                refresh_token: 'rotated-refresh'
+            })
             .reply(200, { access_token: 'token2', refresh_token: 'rotated-again' });
 
         const ST = new ServicetradeClient({
             baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
             refreshToken: 'initial-refresh',
         });
         await ST.login();
@@ -312,6 +348,47 @@ describe('ServicetradeClient - Login tests', function() {
         assert.strictEqual(jobResponse!.id, 100);
     });
 
+    it('Retries with refreshed token after auth interceptor updates auth state', async function() {
+        nock('https://test.host.com')
+            // Initial token acquisition from refreshIfStale
+            .post('/api/oauth2/token', {
+                grant_type: 'password',
+                username: 'test_user',
+                password: 'test_pass',
+            })
+            .reply(200, {
+                access_token: 'initial-token'
+            })
+
+            // First attempt must use initial token and fail with 401
+            .get('/api/job/101')
+            .matchHeader('Authorization', 'Bearer initial-token')
+            .reply(401)
+
+            // Interceptor refreshes auth
+            .post('/api/oauth2/token', {
+                grant_type: 'password',
+                username: 'test_user',
+                password: 'test_pass',
+            })
+            .reply(200, {
+                access_token: 'refreshed-token'
+            })
+
+            // Retry attempt must use refreshed token
+            .get('/api/job/101')
+            .matchHeader('Authorization', 'Bearer refreshed-token')
+            .reply(200, {
+                data: {
+                    id: 101
+                }
+            });
+
+        const ST = new ServicetradeClient(passwordOptions);
+        const jobResponse = await ST.get('/job/101');
+        assert.strictEqual(jobResponse!.id, 101);
+    });
+
     it('Does not auto-authenticate when autoRefreshAuth is false', async function() {
         nock('https://test.host.com')
             .get('/api/job/100')
@@ -358,6 +435,7 @@ describe('ServicetradeClient - Logout tests', function() {
         const scope = nock('https://test.host.com')
             .post('/api/oauth2/token', {
                 grant_type: 'refresh_token',
+                client_id: 'test_client_id',
                 refresh_token: 'initial-refresh-token',
             })
             .reply(200, {
@@ -369,6 +447,7 @@ describe('ServicetradeClient - Logout tests', function() {
 
         const ST = new ServicetradeClient({
             baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
             refreshToken: 'initial-refresh-token',
         });
         await ST.login();

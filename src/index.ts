@@ -94,7 +94,6 @@ export default class ServicetradeClient {
         this.request.defaults.headers[key] = value;
     }
 
-
     unpackResponse(response: AxiosResponse<ServicetradeClientResponse>): ServicetradeClientResponse | null {
         return response?.data?.data ?? null;
     }
@@ -140,8 +139,8 @@ export default class ServicetradeClient {
     // Intentionally only keep the minimal set of credentials required for maintaining connection.
     // If I have a refresh token -- I will not store client_id and client_secret in memory even if you decide to provide them.
     private getCredentials({username, password, clientId, clientSecret, refreshToken, token}: ServicetradeClientOptions) {
-        if (refreshToken)
-            return { grant_type: 'refresh_token', refresh_token: refreshToken };
+        if (clientId && refreshToken)
+            return { grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken };
 
         if (clientId && clientSecret)
             return { grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret };
@@ -226,7 +225,7 @@ export default class ServicetradeClient {
         this.request.defaults.headers.Authorization = `Bearer ${token}`;
 
         if (refreshToken && this.creds) {
-            this.creds = { grant_type: 'refresh_token', refresh_token: refreshToken };
+            this.creds = { grant_type: 'refresh_token', client_id: this.creds.client_id, refresh_token: refreshToken };
         }
 
         this.onSetAuth(this.token);
@@ -239,7 +238,14 @@ export default class ServicetradeClient {
         this.onUnsetAuth();
     }
 
-    async login() {
-        this.setToken(await this.refresh());
+    async login(failedRequest?: any) {
+        const tokenSet = await this.refresh();
+        this.setToken(tokenSet);
+
+        // axios-auth-refresh retries the original failed request config, so we must also
+        // update the failed request header in addition to client defaults.
+        if (failedRequest?.response?.config?.headers) {
+            failedRequest.response.config.headers.Authorization = `Bearer ${tokenSet[0]}`;
+        }
     }
 }

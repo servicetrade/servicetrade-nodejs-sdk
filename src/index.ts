@@ -136,8 +136,8 @@ export default class ServicetradeClient {
         return this.request.post('/attachment', formData, formDataConfig) as Promise<ServicetradeClientResponse | null>;
     }
 
-    // Intentionally only keep the minimal set of credentials required for maintaining connection.
-    // If I have a refresh token -- I will not store client_id and client_secret in memory even if you decide to provide them.
+    // Intentionally only keep the minimal credentials required for maintaining connection.
+    // For refresh-token grants, we keep refresh_token and client_id (but never client_secret).
     private getCredentials({username, password, clientId, clientSecret, refreshToken, token}: ServicetradeClientOptions) {
         if (clientId && refreshToken)
             return { grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken };

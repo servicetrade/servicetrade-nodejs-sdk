@@ -15,7 +15,7 @@
     "publish": "npm run build && npm publish --access public"
   },
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "axios": "^1.13.5",
     "axios-auth-refresh": "^3.3.6",

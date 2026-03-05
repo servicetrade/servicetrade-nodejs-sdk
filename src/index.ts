@@ -58,7 +58,7 @@ export default class ServicetradeClient {
 
         this.baseUrl         = options.baseUrl         ?? 'https://api.servicetrade.com';
         this.apiPrefix       = options.apiPrefix       ?? '/api';
-        this.userAgent       = options.userAgent       ?? 'Servicetrade Node.js SDK';
+        this.userAgent       = options.userAgent       ?? 'ServiceTrade Node.js SDK';
         this.onSetAuth       = options.onSetAuth       ?? NOOP;
         this.onUnsetAuth     = options.onUnsetAuth     ?? NOOP;
         this.autoRefreshAuth = options.autoRefreshAuth ?? true;

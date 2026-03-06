@@ -58,6 +58,9 @@ async function main() {
         // Inject an invalid token to test auto-refresh
         console.log('\n--- Step 3: Injecting bad token to test auto-refresh ---');
         const originalToken = (client as any).token;
+        const refreshTokenBeforeRefresh = client.getRefreshToken();
+        console.log(`Refresh token before bad token (first 20 chars): ${refreshTokenBeforeRefresh?.substring(0, 20)}...`);
+        
         (client as any).token = 'invalid-token';
         (client as any).request.defaults.headers.Authorization = 'Bearer invalid-token';
         console.log('Injected invalid bearer token');
@@ -65,6 +68,19 @@ async function main() {
         console.log('Making API call with bad token (should auto-refresh)...');
         const jobsAfterBadToken = await client.get('/job');
         console.log(`Auto-refresh successful! Jobs: ${jobsAfterBadToken?.jobs.length}`);
+
+        // Verify that the refresh token was updated after auto-refresh
+        const refreshTokenAfterRefresh = client.getRefreshToken();
+        console.log(`Refresh token after refresh (first 20 chars): ${refreshTokenAfterRefresh?.substring(0, 20)}...`);
+        
+        if (!refreshTokenAfterRefresh) {
+            throw new Error('Refresh token is missing after auto-refresh');
+        }
+        if (refreshTokenAfterRefresh === refreshTokenBeforeRefresh) {
+            console.log('Note: Refresh token unchanged (server may reuse tokens)');
+        } else {
+            console.log('Confirmed: Refresh token was updated after auto-refresh');
+        }
 
         // Capture the refresh token before logout for verification
         const revokedRefreshToken = client.getRefreshToken();

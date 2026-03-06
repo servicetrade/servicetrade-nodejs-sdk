@@ -2,12 +2,6 @@ import nock from 'nock';
 import assert from 'assert';
 import ServicetradeClient from '../src/index';
 
-const passwordOptions = {
-    baseUrl: 'https://test.host.com',
-    username: 'test_user',
-    password: 'test_pass',
-};
-
 const clientCredentialsOptions = {
     baseUrl: 'https://test.host.com',
     clientId: 'test_client_id',
@@ -31,14 +25,6 @@ describe('ServicetradeClient - Module exports', function() {
 });
 
 describe('ServicetradeClient - Constructor tests', function() {
-
-    it('Creates client with username/password credentials', function() {
-        const ST = new ServicetradeClient(passwordOptions);
-        assert.ok(ST);
-        assert.strictEqual(ST['creds']!.grant_type, 'password');
-        assert.strictEqual(ST['creds']!.username, 'test_user');
-        assert.strictEqual(ST['creds']!.password, 'test_pass');
-    });
 
     it('Creates client with client credentials', function() {
         const ST = new ServicetradeClient(clientCredentialsOptions);
@@ -66,7 +52,7 @@ describe('ServicetradeClient - Constructor tests', function() {
             new ServicetradeClient(badOptions as any);
             assert.fail('Should have thrown an error');
         } catch (e: any) {
-            assert.strictEqual(e.message, 'No valid credentials provided. Required: username/password or clientId/clientSecret or refreshToken');
+            assert.strictEqual(e.message, 'No valid credentials provided. Required: clientId/clientSecret or clientId/refreshToken');
         }
     });
 
@@ -77,7 +63,7 @@ describe('ServicetradeClient - Constructor tests', function() {
             .reply(200, {});
 
         const ST = new ServicetradeClient({
-            ...passwordOptions,
+            ...clientCredentialsOptions,
             token: 'preset-token'
         });
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer preset-token');
@@ -94,7 +80,7 @@ describe('ServicetradeClient - Constructor tests', function() {
     });
 
     it('Client has expected methods', function() {
-        const client = new ServicetradeClient(passwordOptions);
+        const client = new ServicetradeClient(clientCredentialsOptions);
 
         assert.strictEqual(typeof client.login, 'function');
         assert.strictEqual(typeof client.logout, 'function');
@@ -108,23 +94,6 @@ describe('ServicetradeClient - Constructor tests', function() {
 });
 
 describe('ServicetradeClient - Login tests', function() {
-
-    it('Successful login with password grant returns token', async function() {
-        nock('https://test.host.com')
-            .post('/api/oauth2/token', {
-                grant_type: 'password',
-                username: 'test_user',
-                password: 'test_pass',
-            })
-            .reply(200, {
-                access_token: 'abcd1234wxyz',
-                token_type: 'Bearer'
-            });
-
-        const ST = new ServicetradeClient(passwordOptions);
-        await ST.login();
-        assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer abcd1234wxyz');
-    });
 
     it('Successful login with client credentials returns token', async function() {
         nock('https://test.host.com')
@@ -192,23 +161,6 @@ describe('ServicetradeClient - Login tests', function() {
         assert.strictEqual(ST['creds']!.client_id, 'test_client_id');
     });
 
-    it('Switches to refresh_token grant when server returns a refresh token for a password grant', async function() {
-        nock('https://test.host.com')
-            // First login uses password grant
-            .post('/api/oauth2/token', { grant_type: 'password', username: 'test_user', password: 'test_pass' })
-            .reply(200, { access_token: 'token1', refresh_token: 'server-issued-refresh' })
-            // Second login should now use the refresh token
-            .post('/api/oauth2/token', { grant_type: 'refresh_token', refresh_token: 'server-issued-refresh' })
-            .reply(200, { access_token: 'token2', refresh_token: 'rotated-refresh' });
-
-        const ST = new ServicetradeClient(passwordOptions);
-        await ST.login();
-        assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
-        assert.strictEqual(ST['creds']!.refresh_token, 'server-issued-refresh');
-        await ST.login();
-        assert.strictEqual(ST['creds']!.refresh_token, 'rotated-refresh');
-    });
-
     it('Uses updated refresh token for subsequent logins', async function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token', {
@@ -243,7 +195,7 @@ describe('ServicetradeClient - Login tests', function() {
             });
 
         const ST = new ServicetradeClient({
-            ...passwordOptions,
+            ...clientCredentialsOptions,
             autoRefreshAuth: false
         });
         try {
@@ -266,7 +218,7 @@ describe('ServicetradeClient - Login tests', function() {
         } catch (e: any) {
             assert.strictEqual(
                 e.message,
-                'No credentials available to authenticate. Provide username/password, clientId/clientSecret, or refreshToken.'
+                'No credentials available to authenticate. Provide clientId/clientSecret or clientId/refreshToken.'
             );
         }
     });
@@ -299,7 +251,7 @@ describe('ServicetradeClient - Login tests', function() {
 
         let capturedToken: string | undefined;
         const ST = new ServicetradeClient({
-            ...passwordOptions,
+            ...clientCredentialsOptions,
             onSetAuth: (token) => {
                 capturedToken = token;
             }
@@ -312,9 +264,9 @@ describe('ServicetradeClient - Login tests', function() {
         nock('https://test.host.com')
             // First login from refreshIfStale (no token)
             .post('/api/oauth2/token', {
-                grant_type: 'password',
-                username: 'test_user',
-                password: 'test_pass',
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
             })
             .reply(200, {
                 access_token: 'initial-token'
@@ -326,9 +278,9 @@ describe('ServicetradeClient - Login tests', function() {
 
             // Re-auth after 401
             .post('/api/oauth2/token', {
-                grant_type: 'password',
-                username: 'test_user',
-                password: 'test_pass',
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
             })
             .reply(200, {
                 access_token: 'refreshed-token'
@@ -342,7 +294,7 @@ describe('ServicetradeClient - Login tests', function() {
                 }
             });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         const jobResponse = await ST.get('/job/100');
         assert.strictEqual(typeof jobResponse, 'object');
         assert.strictEqual(jobResponse!.id, 100);
@@ -352,9 +304,9 @@ describe('ServicetradeClient - Login tests', function() {
         nock('https://test.host.com')
             // Initial token acquisition from refreshIfStale
             .post('/api/oauth2/token', {
-                grant_type: 'password',
-                username: 'test_user',
-                password: 'test_pass',
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
             })
             .reply(200, {
                 access_token: 'initial-token'
@@ -367,9 +319,9 @@ describe('ServicetradeClient - Login tests', function() {
 
             // Interceptor refreshes auth
             .post('/api/oauth2/token', {
-                grant_type: 'password',
-                username: 'test_user',
-                password: 'test_pass',
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
             })
             .reply(200, {
                 access_token: 'refreshed-token'
@@ -384,7 +336,7 @@ describe('ServicetradeClient - Login tests', function() {
                 }
             });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         const jobResponse = await ST.get('/job/101');
         assert.strictEqual(jobResponse!.id, 101);
     });
@@ -395,7 +347,7 @@ describe('ServicetradeClient - Login tests', function() {
             .reply(401, {});
 
         const ST = new ServicetradeClient({
-            ...passwordOptions,
+            ...clientCredentialsOptions,
             autoRefreshAuth: false,
         });
         let loginCalled = false;
@@ -423,7 +375,7 @@ describe('ServicetradeClient - Logout tests', function() {
                 access_token: 'test-token'
             });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer test-token');
 
@@ -442,7 +394,7 @@ describe('ServicetradeClient - Logout tests', function() {
                 access_token: 'test-token',
                 refresh_token: 'rotated-refresh-token'
             })
-            .post('/api/oauth2/revoke', { refresh_token: 'rotated-refresh-token' })
+            .post('/api/oauth2/revoke', { refresh_token: 'rotated-refresh-token', client_id: 'test_client_id' })
             .reply(200, {});
 
         const ST = new ServicetradeClient({
@@ -459,7 +411,7 @@ describe('ServicetradeClient - Logout tests', function() {
     it('Logout calls onUnsetAuth callback', async function() {
         let unsetCalled = false;
         const ST = new ServicetradeClient({
-            ...passwordOptions,
+            ...clientCredentialsOptions,
             onUnsetAuth: () => {
                 unsetCalled = true;
             }
@@ -488,7 +440,7 @@ describe('ServicetradeClient - Get tests', function() {
                 }
             });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const jobResponse = await ST.get(`job/${testJobId}`);
         assert.strictEqual(typeof jobResponse, 'object');
@@ -507,7 +459,7 @@ describe('ServicetradeClient - Get tests', function() {
                 id: testJobId
             });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const jobResponse = await ST.get(`job/${testJobId}`);
         assert.strictEqual(jobResponse, null);
@@ -527,7 +479,7 @@ describe('ServicetradeClient - Put tests', function() {
             .matchHeader('Authorization', 'Bearer test-token')
             .reply(200, { data: { id: 1234 } });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const jobItemResponse = await ST.put(`/jobitem/${jobItemId}`, { libitemId: 9876 });
         assert.strictEqual(jobItemResponse!.id, 1234);
@@ -543,7 +495,7 @@ describe('ServicetradeClient - Put tests', function() {
             .put(`/api/jobitem/${jobItemId}`, { libitemId: 9876 })
             .reply(200, { id: 1234 });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const jobItemResponse = await ST.put(`/jobitem/${jobItemId}`, { libitemId: 9876 });
         assert.strictEqual(jobItemResponse, null);
@@ -571,7 +523,7 @@ describe('ServicetradeClient - Post tests', function() {
             .matchHeader('Authorization', 'Bearer test-token')
             .reply(200, { data: { id: 444 } });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const jobItemResponse = await ST.post(`/jobitem`, postData);
         assert.strictEqual(jobItemResponse!.id, 444);
@@ -587,7 +539,7 @@ describe('ServicetradeClient - Post tests', function() {
             .post(`/api/jobitem/${jobItemId}`, { libitemId: 9876 })
             .reply(200, { id: 1234 });
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const jobItemResponse = await ST.post(`/jobitem/${jobItemId}`, { libitemId: 9876 });
         assert.strictEqual(jobItemResponse, null);
@@ -607,7 +559,7 @@ describe('ServicetradeClient - Delete tests', function() {
             .matchHeader('Authorization', 'Bearer test-token')
             .reply(200, {});
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const response = await ST.delete(`/job/${testJobId}`);
         assert.strictEqual(response, null);
@@ -642,7 +594,7 @@ describe('ServicetradeClient - Attach tests', function() {
             }
         };
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         await ST.login();
         const attachResponse = await ST.attach(
             {
@@ -672,7 +624,7 @@ describe('ServicetradeClient - check userAgent header', function() {
             .matchHeader('User-Agent', 'Test UserAgent')
             .reply(200, {});
 
-        const ST = new ServicetradeClient({...passwordOptions, userAgent: 'Test UserAgent'});
+        const ST = new ServicetradeClient({...clientCredentialsOptions, userAgent: 'Test UserAgent'});
         await ST.delete(`/job/100`);
     });
 });
@@ -689,7 +641,7 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
             .matchHeader('X-Custom-Header', 'customValue')
             .reply(200, {});
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         ST.setCustomHeader('X-Custom-Header', 'customValue');
         await ST.delete(`/job/100`);
     });
@@ -706,7 +658,7 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
             .matchHeader('X-Client-Version', '1.0.0')
             .reply(200, {});
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         ST.setCustomHeader('X-API-Key', 'apiKey123');
         ST.setCustomHeader('X-Client-Version', '1.0.0');
         await ST.delete(`/job/100`);
@@ -723,7 +675,7 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
             .matchHeader('X-Custom-Header', 'newValue')
             .reply(200, {});
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         ST.setCustomHeader('X-Custom-Header', 'originalValue');
         ST.setCustomHeader('X-Custom-Header', 'newValue');
         await ST.delete(`/job/100`);
@@ -740,7 +692,7 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
             .matchHeader('X-Empty-Header', '')
             .reply(200, {});
 
-        const ST = new ServicetradeClient(passwordOptions);
+        const ST = new ServicetradeClient(clientCredentialsOptions);
         ST.setCustomHeader('X-Empty-Header', '');
         await ST.delete(`/job/100`);
     });

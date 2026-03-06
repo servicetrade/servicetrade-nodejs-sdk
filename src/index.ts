@@ -5,6 +5,7 @@ import FormData from 'form-data';
 const NOOP = () => {};
 
 export type BearerToken = string;
+export type RefreshToken = string;
 
 const TOKEN_TTL_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -15,8 +16,6 @@ export interface ServicetradeClientOptions {
     onSetAuth?: (auth: BearerToken) => void; /** Callback when authentication is set */
     onUnsetAuth?: () => void; /** Callback when authentication is unset */
     autoRefreshAuth?: boolean; /** should authentication automatically refresh. Default to true*/
-    username?: string;
-    password?: string;
     clientId?: string;
     clientSecret?: string;
     refreshToken?: string;
@@ -28,11 +27,12 @@ interface Credentials {
     refresh_token?: string;
     client_id?: string;
     client_secret?: string;
-    username?: string;
-    password?: string;
 }
 
-export type TokenSet = [BearerToken, BearerToken | undefined];
+export interface TokenSet {
+    bearerToken: BearerToken;
+    refreshToken?: RefreshToken;
+}
 
 export type ServicetradeClientResponse = Record<string, any>;
 
@@ -138,20 +138,17 @@ export default class ServicetradeClient {
 
     // Intentionally only keep the minimal credentials required for maintaining connection.
     // For refresh-token grants, we keep refresh_token and client_id (but never client_secret).
-    private getCredentials({username, password, clientId, clientSecret, refreshToken, token}: ServicetradeClientOptions) {
+    private getCredentials({clientId, clientSecret, refreshToken, token}: ServicetradeClientOptions) {
         if (clientId && refreshToken)
             return { grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken };
 
         if (clientId && clientSecret)
             return { grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret };
 
-        if (username && password)
-            return { grant_type: 'password', username, password };
-
         if (token)
             return undefined;
 
-        throw new Error('No valid credentials provided. Required: username/password or clientId/clientSecret or refreshToken');
+        throw new Error('No valid credentials provided. Required: clientId/clientSecret or clientId/refreshToken');
     }
 
     // This is a mutex to ensure that only one re-auth method is attempted at a time.
@@ -168,14 +165,14 @@ export default class ServicetradeClient {
 
     private async refreshInternal(): Promise<TokenSet> {
         if (!this.creds) {
-            throw new Error('No credentials available to authenticate. Provide username/password, clientId/clientSecret, or refreshToken.');
+            throw new Error('No credentials available to authenticate. Provide clientId/clientSecret or clientId/refreshToken.');
         }
         const response = await this.authRequest.post('/oauth2/token', this.creds);
         const result = response.data;
         if (!result.access_token) {
             throw new Error('Failed to re-authenticate');
         }
-        return [result.access_token, result?.refresh_token];
+        return { bearerToken: result.access_token, refreshToken: result.refresh_token };
     }
 
     private async attemptRevokeRefreshToken() {
@@ -183,7 +180,11 @@ export default class ServicetradeClient {
             return;
 
         try {
-            await this.authRequest.post('/oauth2/revoke', { refresh_token: this.creds.refresh_token });
+            await this.authRequest.post('/oauth2/revoke', {
+                refresh_token: this.creds.refresh_token,
+                client_id: this.creds.client_id,
+                client_secret: this.creds.client_secret,
+            });
         } catch (error) {
             // If we can't revoke the refresh token, just let it expire.
         }
@@ -220,15 +221,20 @@ export default class ServicetradeClient {
         }
     }
 
-    private setToken([token, refreshToken]: [BearerToken, BearerToken | undefined]) {
-        this.token = token;
-        this.request.defaults.headers.Authorization = `Bearer ${token}`;
+    private setToken({ bearerToken, refreshToken }: TokenSet) {
+        this.token = bearerToken;
+        this.request.defaults.headers.Authorization = `Bearer ${bearerToken}`;
 
         if (refreshToken && this.creds) {
-            this.creds = { grant_type: 'refresh_token', client_id: this.creds.client_id, refresh_token: refreshToken };
+            this.creds.grant_type = 'refresh_token';
+            this.creds.refresh_token = refreshToken;
         }
 
         this.onSetAuth(this.token);
+    }
+
+    getRefreshToken(): string | undefined {
+        return this.creds?.refresh_token;
     }
 
     async logout() {
@@ -245,7 +251,7 @@ export default class ServicetradeClient {
         // axios-auth-refresh retries the original failed request config, so we must also
         // update the failed request header in addition to client defaults.
         if (failedRequest?.response?.config?.headers) {
-            failedRequest.response.config.headers.Authorization = `Bearer ${tokenSet[0]}`;
+            failedRequest.response.config.headers.Authorization = `Bearer ${tokenSet.bearerToken}`;
         }
     }
 }

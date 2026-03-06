@@ -198,11 +198,10 @@ describe('ServicetradeClient - Login tests', function() {
                 access_token: 'initial-token',
                 refresh_token: 'server-issued-refresh'
             })
-            // Second login should use refresh_token grant with client_id
+            // Second login should use refresh_token grant with client_id but NOT client_secret
             .post('/api/oauth2/token', {
                 grant_type: 'refresh_token',
                 client_id: 'test_client_id',
-                client_secret: 'test_client_secret',
                 refresh_token: 'server-issued-refresh',
             })
             .reply(200, {
@@ -225,6 +224,7 @@ describe('ServicetradeClient - Login tests', function() {
         assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
         assert.strictEqual(ST['creds']!.refresh_token, 'server-issued-refresh');
         assert.strictEqual(ST['creds']!.client_id, 'test_client_id');
+        assert.strictEqual(ST['creds']!.client_secret, undefined);
 
         await ST.login();
 

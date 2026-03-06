@@ -82,7 +82,10 @@ export default class ServicetradeClient {
         this.request.interceptors.response.use(this.unpackResponse.bind(this) as any);
 
         if (this.autoRefreshAuth && this.creds) {
-            createAuthRefreshInterceptor(this.request, this.login.bind(this));
+            createAuthRefreshInterceptor(this.request, async (failedRequest: any) => {
+                await this.login();
+                failedRequest.response.config.headers['Authorization'] = `Bearer ${this.token}`;
+            });
         }
 
         if (this.token) {
@@ -244,14 +247,8 @@ export default class ServicetradeClient {
         this.onUnsetAuth();
     }
 
-    async login(failedRequest?: any) {
+    async login() {
         const tokenSet = await this.refresh();
         this.setToken(tokenSet);
-
-        // axios-auth-refresh retries the original failed request config, so we must also
-        // update the failed request header in addition to client defaults.
-        if (failedRequest?.response?.config?.headers) {
-            failedRequest.response.config.headers.Authorization = `Bearer ${tokenSet.bearerToken}`;
-        }
     }
 }

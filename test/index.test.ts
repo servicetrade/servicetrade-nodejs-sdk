@@ -186,6 +186,53 @@ describe('ServicetradeClient - Login tests', function() {
         assert.strictEqual(ST['creds']!.refresh_token, 'rotated-again');
     });
 
+    it('Switches from client_credentials to refresh_token grant when server returns a refresh token', async function() {
+        nock('https://test.host.com')
+            // First login uses client_credentials
+            .post('/api/oauth2/token', {
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
+            })
+            .reply(200, {
+                access_token: 'initial-token',
+                refresh_token: 'server-issued-refresh'
+            })
+            // Second login should use refresh_token grant with client_id
+            .post('/api/oauth2/token', {
+                grant_type: 'refresh_token',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
+                refresh_token: 'server-issued-refresh',
+            })
+            .reply(200, {
+                access_token: 'refreshed-token',
+                refresh_token: 'rotated-refresh'
+            });
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
+            clientSecret: 'test_client_secret',
+        });
+
+        // Verify initial state is client_credentials
+        assert.strictEqual(ST['creds']!.grant_type, 'client_credentials');
+
+        await ST.login();
+
+        // After first login, should have switched to refresh_token grant
+        assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
+        assert.strictEqual(ST['creds']!.refresh_token, 'server-issued-refresh');
+        assert.strictEqual(ST['creds']!.client_id, 'test_client_id');
+
+        await ST.login();
+
+        // Verify refresh token was rotated
+        assert.strictEqual(ST['creds']!.refresh_token, 'rotated-refresh');
+        assert.strictEqual(ST['request'].defaults.headers.Authorization, 'Bearer refreshed-token');
+    });
+
     it('Failed login throws error', async function() {
         nock('https://test.host.com')
             .post('/api/oauth2/token')

@@ -455,6 +455,41 @@ describe('ServicetradeClient - Logout tests', function() {
         assert.ok(scope.isDone(), 'Expected revoke endpoint to be called');
     });
 
+    it('Revokes refresh token with client_id and client_secret after switching from client_credentials grant', async function() {
+        const scope = nock('https://test.host.com')
+            // Initial login with client_credentials returns a refresh token
+            .post('/api/oauth2/token', {
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
+            })
+            .reply(200, {
+                access_token: 'test-token',
+                refresh_token: 'server-issued-refresh',
+            })
+            // Revoke should send refresh_token, client_id, and client_secret
+            .post('/api/oauth2/revoke', {
+                refresh_token: 'server-issued-refresh',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
+            })
+            .reply(200, {});
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
+            clientSecret: 'test_client_secret',
+        });
+
+        await ST.login();
+        assert.strictEqual(ST['creds']!.grant_type, 'refresh_token');
+        assert.strictEqual(ST['creds']!.client_secret, undefined);
+
+        await ST.logout();
+        assert.strictEqual(ST['token'], undefined);
+        assert.ok(scope.isDone(), 'Expected revoke endpoint to be called');
+    });
+
     it('Logout calls onUnsetAuth callback', async function() {
         let unsetCalled = false;
         const ST = new ServicetradeClient({

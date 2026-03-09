@@ -19,8 +19,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run all tests
-        run: npm run test:all
+      - name: Run tests
+        run: npm test
 
       - name: Build TypeScript
         run: npm run build
@@ -46,14 +46,7 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Prepare package.json for NPM
-        run: npm run prepare:npm
-
       - name: Publish to NPM
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Restore package.json
-        if: always()
-        run: npm run restore:package

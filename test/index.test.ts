@@ -2,6 +2,16 @@ import nock from 'nock';
 import assert from 'assert';
 import ServicetradeClient from '../src/index';
 
+/** Build a fake JWT with a specific exp claim (seconds from now) */
+function makeFakeJwt(expiresInSeconds: number): string {
+    const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({
+        sub: 'test',
+        exp: Math.floor(Date.now() / 1000) + expiresInSeconds,
+    })).toString('base64url');
+    return `${header}.${payload}.fakesig`;
+}
+
 const clientCredentialsOptions = {
     baseUrl: 'https://test.host.com',
     clientId: 'test_client_id',
@@ -777,5 +787,116 @@ describe('ServicetradeClient - setCustomHeader tests', function() {
         const ST = new ServicetradeClient(clientCredentialsOptions);
         ST.setCustomHeader('X-Empty-Header', '');
         await ST.delete(`/job/100`);
+    });
+});
+
+describe('ServicetradeClient - Lazy authentication', function() {
+    it('Does not have a token before the first API call', function() {
+        const ST = new ServicetradeClient(clientCredentialsOptions);
+        assert.strictEqual(ST['token'], undefined);
+    });
+
+    it('First API call triggers login automatically', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'lazy-token' })
+            .get('/api/company')
+            .matchHeader('Authorization', 'Bearer lazy-token')
+            .reply(200, { data: { id: 1 } });
+
+        const ST = new ServicetradeClient(clientCredentialsOptions);
+        assert.strictEqual(ST['token'], undefined, 'No token before first call');
+
+        const result = await ST.get('/company');
+        assert.strictEqual(ST['token'], 'lazy-token', 'Token set after first call');
+        assert.strictEqual(result!.id, 1);
+    });
+});
+
+describe('ServicetradeClient - Proactive token refresh', function() {
+    it('Refreshes token proactively when it expires within 5 minutes', async function() {
+        const nearExpiryToken = makeFakeJwt(120); // expires in 2 minutes
+
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'refreshed-token' })
+            .get('/api/company')
+            .matchHeader('Authorization', 'Bearer refreshed-token')
+            .reply(200, { data: { id: 1 } });
+
+        const ST = new ServicetradeClient({
+            ...clientCredentialsOptions,
+            token: nearExpiryToken,
+        });
+
+        const result = await ST.get('/company');
+        assert.strictEqual(ST['token'], 'refreshed-token');
+        assert.strictEqual(result!.id, 1);
+    });
+
+    it('Does not refresh token when it has more than 5 minutes remaining', async function() {
+        const freshToken = makeFakeJwt(600); // expires in 10 minutes
+
+        nock('https://test.host.com')
+            .get('/api/company')
+            .matchHeader('Authorization', `Bearer ${freshToken}`)
+            .reply(200, { data: { id: 1 } });
+
+        const ST = new ServicetradeClient({
+            ...clientCredentialsOptions,
+            token: freshToken,
+        });
+
+        const result = await ST.get('/company');
+        assert.strictEqual(ST['token'], freshToken, 'Token was not replaced');
+        assert.strictEqual(result!.id, 1);
+    });
+
+    it('Does not refresh when token is not a JWT (non-parseable)', async function() {
+        nock('https://test.host.com')
+            .get('/api/company')
+            .matchHeader('Authorization', 'Bearer opaque-token')
+            .reply(200, { data: { id: 1 } });
+
+        const ST = new ServicetradeClient({
+            ...clientCredentialsOptions,
+            token: 'opaque-token',
+        });
+
+        const result = await ST.get('/company');
+        assert.strictEqual(ST['token'], 'opaque-token', 'Opaque token left unchanged');
+        assert.strictEqual(result!.id, 1);
+    });
+});
+
+describe('ServicetradeClient - Refresh mutex', function() {
+    it('Concurrent API calls share a single token refresh', async function() {
+        let tokenRequestCount = 0;
+
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(() => {
+                tokenRequestCount++;
+                return [200, { access_token: 'shared-token' }];
+            })
+            .get('/api/company')
+            .reply(200, { data: { id: 1 } })
+            .get('/api/company')
+            .reply(200, { data: { id: 2 } })
+            .get('/api/company')
+            .reply(200, { data: { id: 3 } });
+
+        const ST = new ServicetradeClient(clientCredentialsOptions);
+
+        const [r1, r2, r3] = await Promise.all([
+            ST.get('/company'),
+            ST.get('/company'),
+            ST.get('/company'),
+        ]);
+
+        assert.strictEqual(tokenRequestCount, 1, 'Only one token request was made');
+        assert.ok(r1, 'First call returned data');
+        assert.ok(r2, 'Second call returned data');
+        assert.ok(r3, 'Third call returned data');
     });
 });

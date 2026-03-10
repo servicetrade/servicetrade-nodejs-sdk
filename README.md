@@ -66,7 +66,7 @@ Authentication happens automatically on the first API call. The SDK obtains an O
 
 ## Authentication
 
-The SDK supports four authentication modes. You must provide at least one set of credentials.
+The SDK supports three authentication modes. You must provide at least one set of credentials.
 
 ### Client Credentials
 
@@ -87,6 +87,7 @@ Use a refresh token for long-lived sessions where you already have a token from 
 
 ```typescript
 const client = new ServicetradeClient({
+    clientId: 'your-client-id',
     refreshToken: 'your-refresh-token',
 });
 ```
@@ -104,19 +105,6 @@ const client = new ServicetradeClient({
 ```
 
 In this mode, no token endpoint calls are made. The token is used as-is. If it expires, the SDK cannot refresh it -- API calls will throw an `AxiosError` with status 401.
-
-### Username and Password (legacy)
-
-Use `username` and `password` for password-based authentication.  This is a legacy authentication mode that will be removed in a future release.  Use Client Credentials instead.
-
-```typescript
-const client = new ServicetradeClient({
-    username: 'your-username',
-    password: 'your-password',
-});
-```
-
-The SDK exchanges these for a bearer token via `POST /api/oauth2/token` with `grant_type=password`. If the server returns a refresh token in its response, the SDK automatically switches to using `refresh_token` grant for subsequent authentications.
 
 ### Lazy Authentication
 
@@ -137,10 +125,9 @@ await client.login(); // Authenticates immediately; throws on failure
 
 When multiple credential types are provided, the SDK uses the first match in this order:
 
-1. `refreshToken`
+1. `clientId` + `refreshToken`
 2. `clientId` + `clientSecret`
-3. `username` + `password`
-4. `token` (pre-existing bearer token, no refresh capability)
+3. `token` (pre-existing bearer token, no refresh capability)
 
 ## API Methods
 
@@ -239,8 +226,6 @@ const client = new ServicetradeClient({
 | `clientId`     | `string?` | `undefined` | OAuth2 client ID. Used with `clientSecret` for `client_credentials`.  |
 | `clientSecret` | `string?` | `undefined` | OAuth2 client secret. Used with `clientId` for `client_credentials`.  |
 | `refreshToken` | `string?` | `undefined` | OAuth2 refresh token for `refresh_token` grant.                       |
-| `username`     | `string?` | `undefined` | Username for `password` grant.                                        |
-| `password`     | `string?` | `undefined` | Password for `password` grant.                                        |
 | `token`        | `string?` | `undefined` | Pre-existing bearer token. No refresh capability.                     |
 
 ### Connection
@@ -296,15 +281,36 @@ const client = new ServicetradeClient({
 });
 ```
 
-To reuse a previously stored token, pass it as `token` along with credentials for refresh capability:
+When the server issues a refresh token (e.g., in response to a `client_credentials` grant), the SDK stores it internally. Use `getRefreshToken()` to retrieve it for persistence:
 
 ```typescript
-const cachedToken = cache.get('servicetrade_token');
-
 const client = new ServicetradeClient({
     clientId: 'your-client-id',
     clientSecret: 'your-client-secret',
-    token: cachedToken, // Used immediately; refreshed via clientId/clientSecret when it expires
+    onSetAuth: (token) => {
+        cache.set('servicetrade_token', token);
+        cache.set('servicetrade_refresh_token', client.getRefreshToken());
+    },
+    onUnsetAuth: () => {
+        cache.delete('servicetrade_token');
+        cache.delete('servicetrade_refresh_token');
+    },
+});
+```
+
+To reuse previously stored tokens, pass them along with credentials:
+
+```typescript
+const cachedToken = cache.get('servicetrade_token');
+const cachedRefreshToken = cache.get('servicetrade_refresh_token');
+
+const client = new ServicetradeClient({
+    clientId: 'your-client-id',
+    // If a refresh token is available, use it; otherwise fall back to clientSecret
+    ...(cachedRefreshToken
+        ? { refreshToken: cachedRefreshToken }
+        : { clientSecret: 'your-client-secret' }),
+    token: cachedToken, // Used immediately; refreshed when it expires
 });
 ```
 
@@ -365,6 +371,7 @@ import ServicetradeClient, {
     ServicetradeClientResponse,
     FileAttachment,
     BearerToken,
+    RefreshToken,
     TokenSet,
 } from '@servicetrade/sdk';
 ```

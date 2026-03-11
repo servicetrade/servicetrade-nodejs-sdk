@@ -430,7 +430,37 @@ describe('ServicetradeClient - Logout tests', function() {
         assert.strictEqual(ST['request'].defaults.headers.Authorization, undefined);
     });
 
-    it('Logout revokes refresh token if present', async function() {
+    it('Logout revokes refresh token when client_secret is present', async function() {
+        const scope = nock('https://test.host.com')
+            .post('/api/oauth2/token', {
+                grant_type: 'client_credentials',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret',
+            })
+            .reply(200, {
+                access_token: 'test-token',
+                refresh_token: 'server-issued-refresh-token'
+            })
+            .post('/api/oauth2/revoke', {
+                refresh_token: 'server-issued-refresh-token',
+                client_id: 'test_client_id',
+                client_secret: 'test_client_secret'
+            })
+            .reply(200, {});
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            clientId: 'test_client_id',
+            clientSecret: 'test_client_secret',
+        });
+        await ST.login();
+        await ST.logout();
+        assert.strictEqual(ST['request'].defaults.headers.Authorization, undefined);
+        assert.strictEqual(ST['creds']!.refresh_token, undefined, 'Expected refresh_token to be cleared');
+        assert.ok(scope.isDone(), 'Expected revoke endpoint to be called');
+    });
+
+    it('Logout skips revoke when client_secret is not present (refresh token only auth)', async function() {
         const scope = nock('https://test.host.com')
             .post('/api/oauth2/token', {
                 grant_type: 'refresh_token',
@@ -440,9 +470,7 @@ describe('ServicetradeClient - Logout tests', function() {
             .reply(200, {
                 access_token: 'test-token',
                 refresh_token: 'rotated-refresh-token'
-            })
-            .post('/api/oauth2/revoke', { refresh_token: 'rotated-refresh-token', client_id: 'test_client_id' })
-            .reply(200, {});
+            });
 
         const ST = new ServicetradeClient({
             baseUrl: 'https://test.host.com',
@@ -452,7 +480,8 @@ describe('ServicetradeClient - Logout tests', function() {
         await ST.login();
         await ST.logout();
         assert.strictEqual(ST['request'].defaults.headers.Authorization, undefined);
-        assert.ok(scope.isDone(), 'Expected revoke endpoint to be called');
+        assert.strictEqual(ST['creds']!.refresh_token, 'rotated-refresh-token', 'Expected refresh_token to remain (no secret to revoke)');
+        assert.ok(scope.isDone(), 'Expected only login call, no revoke');
     });
 
     it('Logout calls onUnsetAuth callback', async function() {

@@ -53,16 +53,18 @@ export default class ServicetradeClient {
     private autoRefreshAuth: boolean;
     private token?: BearerToken;
     private creds?: Credentials;
+    private readonly clientSecret?: string;
 
     constructor(options: ServicetradeClientOptions) {
 
         this.baseUrl         = options.baseUrl         ?? 'https://api.servicetrade.com';
         this.apiPrefix       = options.apiPrefix       ?? '/api';
-        this.userAgent       = options.userAgent       ?? 'Servicetrade Node.js SDK';
+        this.userAgent       = options.userAgent       ?? 'ServiceTrade Node.js SDK';
         this.onSetAuth       = options.onSetAuth       ?? NOOP;
         this.onUnsetAuth     = options.onUnsetAuth     ?? NOOP;
         this.autoRefreshAuth = options.autoRefreshAuth ?? true;
         this.token           = options.token;
+        this.clientSecret    = options.clientSecret;
         this.creds           = this.getCredentials(options);
 
         this.request = axios.create({
@@ -186,7 +188,7 @@ export default class ServicetradeClient {
             await this.authRequest.post('/oauth2/revoke', {
                 refresh_token: this.creds.refresh_token,
                 client_id: this.creds.client_id,
-                client_secret: this.creds.client_secret,
+                client_secret: this.clientSecret,
             });
         } catch (error) {
             // If we can't revoke the refresh token, just let it expire.
@@ -229,8 +231,11 @@ export default class ServicetradeClient {
         this.request.defaults.headers.Authorization = `Bearer ${bearerToken}`;
 
         if (refreshToken && this.creds) {
-            this.creds.grant_type = 'refresh_token';
-            this.creds.refresh_token = refreshToken;
+            this.creds = {
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken,
+                client_id: this.creds.client_id,
+            };
         }
 
         this.onSetAuth(this.token);

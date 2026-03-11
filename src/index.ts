@@ -181,7 +181,7 @@ export default class ServicetradeClient {
     }
 
     private async attemptRevokeRefreshToken() {
-        if (!this.creds?.refresh_token || !this.creds.client_secret)
+        if (!this.creds?.refresh_token || !this.clientSecret)
             return;
 
         try {

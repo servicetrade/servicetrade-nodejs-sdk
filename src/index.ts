@@ -257,3 +257,71 @@ export default class ServicetradeClient {
         this.setToken(tokenSet);
     }
 }
+
+export interface PaginatorOptions {
+    /** Optional query parameters to include on every request. */
+    params?: Record<string, any>;
+}
+
+/**
+ * Iterate over all pages of a paginated API endpoint.
+ *
+ * Usage:
+ * ```ts
+ * const paginator = new Paginator(client, '/job', 'jobs', { params: { status: 'scheduled' } });
+ * for await (const job of paginator) {
+ *     console.log(job.id);
+ * }
+ * ```
+ */
+export class Paginator {
+    private client: ServicetradeClient;
+    private path: string;
+    private itemsKey: string;
+    private params: Record<string, any>;
+
+    constructor(
+        client: ServicetradeClient,
+        path: string,
+        itemsKey: string,
+        options?: PaginatorOptions,
+    ) {
+        this.client = client;
+        this.path = path;
+        this.itemsKey = itemsKey;
+        this.params = options?.params ? { ...options.params } : {};
+    }
+
+    async *[Symbol.asyncIterator](): AsyncIterableIterator<Record<string, any>> {
+        let page = 1;
+        let totalPages = 1; // assume at least one page
+
+        while (page <= totalPages) {
+            const queryString = new URLSearchParams({
+                ...Object.fromEntries(
+                    Object.entries(this.params).map(([k, v]) => [k, String(v)])
+                ),
+                page: String(page),
+            }).toString();
+
+            const response = await this.client.get(`${this.path}?${queryString}`);
+
+            if (!response || typeof response !== 'object') {
+                return;
+            }
+
+            const rawTotalPages = (response as any).totalPages;
+            if (rawTotalPages !== undefined && rawTotalPages !== null) {
+                const parsed = Number(rawTotalPages);
+                totalPages = Number.isFinite(parsed) ? Math.max(parsed, 1) : 1;
+            }
+
+            const items = (response as any)[this.itemsKey];
+            if (Array.isArray(items)) {
+                yield* items;
+            }
+
+            page++;
+        }
+    }
+}

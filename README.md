@@ -176,6 +176,35 @@ await client.delete('/location/456');
 
 **Signature:** `delete(path: string): Promise<Record<string, any> | null>`
 
+### Pagination
+
+Iterate over all pages of a paginated endpoint automatically using the `Paginator` class:
+
+```typescript
+import ServicetradeClient, { Paginator } from '@servicetrade/sdk';
+
+const client = new ServicetradeClient({
+    clientId: 'your-client-id',
+    clientSecret: 'your-client-secret',
+});
+
+const paginator = new Paginator(client, '/job', 'jobs', {
+    params: { status: 'scheduled' },
+});
+
+for await (const job of paginator) {
+    console.log(`Job #${job.id}: ${job.description}`);
+}
+```
+
+The `Paginator` constructor takes:
+
+- `client` -- a `ServicetradeClient` instance
+- `path` -- the API endpoint path (e.g., `'/job'`)
+- `itemsKey` -- the key in the response that contains the list of items (e.g., `'jobs'`)
+- `options` -- optional object with:
+  - `params` -- query parameters to include on every request
+
 ### File Upload
 
 ```typescript
@@ -367,6 +396,8 @@ The SDK is written in TypeScript and ships type declarations. Key exported types
 
 ```typescript
 import ServicetradeClient, {
+    Paginator,
+    PaginatorOptions,
     ServicetradeClientOptions,
     ServicetradeClientResponse,
     FileAttachment,

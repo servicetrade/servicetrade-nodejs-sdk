@@ -1,6 +1,6 @@
 import nock from 'nock';
 import assert from 'assert';
-import ServicetradeClient from '../src/index';
+import ServicetradeClient, { Paginator } from '../src/index';
 
 /** Build a fake JWT with a specific exp claim (seconds from now) */
 function makeFakeJwt(expiresInSeconds: number): string {
@@ -927,5 +927,157 @@ describe('ServicetradeClient - Refresh mutex', function() {
         assert.ok(r1, 'First call returned data');
         assert.ok(r2, 'Second call returned data');
         assert.ok(r3, 'Third call returned data');
+    });
+});
+
+describe('Paginator', function() {
+
+    it('Iterates over a single page of results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }, { id: 2 }],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 2);
+        assert.strictEqual(items[0].id, 1);
+        assert.strictEqual(items[1].id, 2);
+    });
+
+    it('Iterates over multiple pages of results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }, { id: 2 }],
+                    totalPages: 3,
+                }
+            })
+            .get('/api/job')
+            .query({ page: '2' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 3 }, { id: 4 }],
+                    totalPages: 3,
+                }
+            })
+            .get('/api/job')
+            .query({ page: '3' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 5 }],
+                    totalPages: 3,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 5);
+        assert.deepStrictEqual(
+            items.map(i => i.id),
+            [1, 2, 3, 4, 5]
+        );
+    });
+
+    it('Handles empty results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 0);
+    });
+
+    it('Handles missing items key', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 0);
+    });
+
+    it('Passes custom params along with page parameter', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ status: 'scheduled', page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs', {
+            params: { status: 'scheduled' },
+        });
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 1);
+        assert.strictEqual(items[0].id, 1);
     });
 });

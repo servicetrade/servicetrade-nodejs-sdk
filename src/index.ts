@@ -67,19 +67,18 @@ export default class ServicetradeClient {
         this.clientSecret    = options.clientSecret;
         this.creds           = this.getCredentials(options);
 
-        this.request = axios.create({
+        const axiosConfig = {
             baseURL: this.baseUrl + this.apiPrefix,
-            maxBodyLength: Infinity,
+            maxBodyLength: 110 * 1024 * 1024, // ~110MB, slightly above server's 101MB post_max_size
+            maxContentLength: 110 * 1024 * 1024,
             headers: { 'User-Agent': this.userAgent },
-        });
+        };
+
+        this.request = axios.create(axiosConfig);
 
         // This is a separate request object for authentication requests.
         // This instances does not have interceptors applied to it which are problematic.
-        this.authRequest = axios.create({
-            baseURL: this.baseUrl + this.apiPrefix,
-            maxBodyLength: Infinity,
-            headers: { 'User-Agent': this.userAgent },
-        });
+        this.authRequest = axios.create(axiosConfig);
 
         this.request.interceptors.response.use(this.unpackResponse.bind(this) as any);
 

@@ -22,5 +22,5 @@ jobs:
         cache-dependency-path: package-lock.json
     - name: Set git config
       run: git config --global url."https://github.com/".insteadOf ssh://git@github.com/
-    - run: npm ci
+    - run: npm ci --ignore-scripts
     - run: npm test

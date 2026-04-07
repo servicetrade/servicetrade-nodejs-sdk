@@ -1080,4 +1080,58 @@ describe('Paginator', function() {
         assert.strictEqual(items.length, 1);
         assert.strictEqual(items[0].id, 1);
     });
+
+    it('toArray() returns all items across pages', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }, { id: 2 }],
+                    totalPages: 2,
+                }
+            })
+            .get('/api/job')
+            .query({ page: '2' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 3 }],
+                    totalPages: 2,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const items = await new Paginator(client, '/job', 'jobs').toArray();
+
+        assert.strictEqual(items.length, 3);
+        assert.deepStrictEqual(
+            items.map(i => i.id),
+            [1, 2, 3]
+        );
+    });
+
+    it('toArray() returns empty array when no results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const items = await new Paginator(client, '/job', 'jobs').toArray();
+
+        assert.strictEqual(items.length, 0);
+    });
 });

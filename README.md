@@ -192,9 +192,13 @@ const paginator = new Paginator(client, '/job', 'jobs', {
     params: { status: 'scheduled' },
 });
 
+// act on each result
 for await (const job of paginator) {
     console.log(`Job #${job.id}: ${job.description}`);
 }
+
+// ...or collect all the results into an array
+const allJobs = await new Paginator(client, '/job', 'jobs').toArray();
 ```
 
 The `Paginator` constructor takes:

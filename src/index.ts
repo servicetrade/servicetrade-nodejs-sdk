@@ -291,6 +291,12 @@ export class Paginator {
         this.params = options?.params ? { ...options.params } : {};
     }
 
+    async toArray(): Promise<Record<string, any>[]> {
+        const items: Record<string, any>[] = [];
+        for await (const item of this) items.push(item);
+        return items;
+    }
+
     async *[Symbol.asyncIterator](): AsyncIterableIterator<Record<string, any>> {
         let page = 1;
         let totalPages = 1; // assume at least one page

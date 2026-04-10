@@ -1,6 +1,7 @@
 import createAuthRefreshInterceptor from 'axios-auth-refresh';
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 import FormData from 'form-data';
+import { URL } from 'url';
 
 const NOOP = () => {};
 
@@ -41,12 +42,49 @@ export interface FileAttachment {
     options: any;
 }
 
+function _stripLeadingSlash(s: string) {
+    return s.replace(/^\/+/, '');
+}
+
+function _stripTrailingSlash(s: string) {
+    return s.replace(/\/+$/, '');
+}
+
+function _sanitizeUrl(baseUrl: string, apiPrefix: string) {
+    const base = _stripTrailingSlash(baseUrl);
+    const path = _stripTrailingSlash(_stripLeadingSlash(apiPrefix));
+    return !path ? `${base}/` : `${base}/${path}/`;
+}
+
+/** ServiceTrade query lists are comma-separated (e.g. `officeIds=1,2,3`). */
+function _wrangleParamValue(
+    value: string | number | readonly (string | number)[] | null | undefined,
+): string | null {
+    if (value === undefined || value === null) {
+        return null;
+    }
+    if (Array.isArray(value)) {
+        if (value.length === 0) {
+            return null;
+        }
+        return value.map(String).join(',');
+    }
+    if (typeof value === 'number') {
+        return String(value);
+    }
+    if (typeof value === 'string') {
+        return value;
+    }
+    return null;
+}
+
 export default class ServicetradeClient {
 
     private request: AxiosInstance;
     private authRequest: AxiosInstance;
     private baseUrl: string;
     private apiPrefix: string;
+    private sanitizedBaseUrl: string;
     private userAgent: string;
     private onSetAuth: ((auth: BearerToken) => void);
     private onUnsetAuth: (() => void);
@@ -67,8 +105,11 @@ export default class ServicetradeClient {
         this.clientSecret    = options.clientSecret;
         this.creds           = this.getCredentials(options);
 
+        // Base must end with '/' when it has a path
+        this.sanitizedBaseUrl = _sanitizeUrl(this.baseUrl, this.apiPrefix);
+
         const axiosConfig = {
-            baseURL: this.baseUrl + this.apiPrefix,
+            baseURL: this.sanitizedBaseUrl,
             maxBodyLength: 110 * 1024 * 1024, // ~110MB, slightly above server's 101MB post_max_size
             maxContentLength: 110 * 1024 * 1024,
             headers: { 'User-Agent': this.userAgent },
@@ -102,24 +143,28 @@ export default class ServicetradeClient {
         return response?.data?.data ?? null;
     }
 
-    async get(path: string): Promise<ServicetradeClientResponse | null> {
+    async get(path: string, params: Record<string, any> = {}): Promise<ServicetradeClientResponse | null> {
         await this.refreshIfStale();
-        return this.request.get<ServicetradeClientResponse>(path);
+        return this.request.get<ServicetradeClientResponse>(this.parseUrl(path, params));
+    }
+
+    getAll(path: string, itemsKey: string, params: Record<string, any> = {}): Paginator {
+        return new Paginator(this, path, itemsKey, { params });
     }
 
     async put(path: string, postData: any): Promise<ServicetradeClientResponse | null> {
         await this.refreshIfStale();
-        return this.request.put<ServicetradeClientResponse>(path, postData);
+        return this.request.put<ServicetradeClientResponse>(this.parseUrl(path), postData);
     }
 
     async post(path: string, postData: any): Promise<ServicetradeClientResponse | null> {
         await this.refreshIfStale();
-        return this.request.post<ServicetradeClientResponse>(path, postData);
+        return this.request.post<ServicetradeClientResponse>(this.parseUrl(path), postData);
     }
 
     async delete(path: string): Promise<ServicetradeClientResponse | null> {
         await this.refreshIfStale();
-        return this.request.delete<ServicetradeClientResponse>(path);
+        return this.request.delete<ServicetradeClientResponse>(this.parseUrl(path));
     }
 
     async attach(params: Record<string, any>, file: FileAttachment): Promise<ServicetradeClientResponse | null> {
@@ -223,6 +268,23 @@ export default class ServicetradeClient {
             // This way we don't spam auth if we dont need to.
             return Number.MAX_SAFE_INTEGER;
         }
+    }
+
+    private parseUrl(
+        urlString: string,
+        params: Record<string, string | number | readonly (string | number)[] | null | undefined> = {},
+    ): string {
+        const url = new URL(_stripLeadingSlash(urlString), this.sanitizedBaseUrl);
+        for (const [key, value] of Object.entries(params)) {
+            if (url.searchParams.has(key)) {
+                continue;
+            }
+            const s = _wrangleParamValue(value);
+            if (s !== null) {
+                url.searchParams.set(key, s);
+            }
+        }
+        return url.toString();
     }
 
     private setToken({ bearerToken, refreshToken }: TokenSet) {

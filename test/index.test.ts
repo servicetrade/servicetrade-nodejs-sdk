@@ -568,11 +568,12 @@ describe('ServicetradeClient - GET query params (parseUrl)', function() {
         assert.strictEqual(q.has('empty'), false);
     });
 
-    it('ignores param values that are not string, number, or array', function() {
+    it('accepts booleans and ignores unsupported param types', function() {
         const ST = makeParseUrlClient();
         const params: Record<string, any> = {
             kept: 'x',
-            asBool: true,
+            isVendor: true,
+            isCustomer: false,
             asObject: { nested: 1 },
             asFn: () => {},
             asDate: new Date(0),
@@ -580,7 +581,8 @@ describe('ServicetradeClient - GET query params (parseUrl)', function() {
         const fullUrl = ST['parseUrl']('/job', params);
         const q = queryOf(fullUrl);
         assert.strictEqual(q.get('kept'), 'x');
-        assert.strictEqual(q.has('asBool'), false);
+        assert.strictEqual(q.get('isVendor'), '1');
+        assert.strictEqual(q.get('isCustomer'), '0');
         assert.strictEqual(q.has('asObject'), false);
         assert.strictEqual(q.has('asFn'), false);
         assert.strictEqual(q.has('asDate'), false);
@@ -610,12 +612,56 @@ describe('ServicetradeClient - GET query params (parseUrl)', function() {
         assert.strictEqual(q.get('fromParams'), '2');
     });
 
-    it('when the same key appears in the URL and params, the URL value wins', function() {
+    it('when the same key appears in the URL and params, the URL value wins', async function() {
         const ST = makeParseUrlClient();
+
+        // Verify parseUrl produces correct result
         const fullUrl = ST['parseUrl']('/job?foo=from-url', { foo: 'from-params', bar: 'only-params' });
         const q = queryOf(fullUrl);
         assert.strictEqual(q.get('foo'), 'from-url');
         assert.strictEqual(q.get('bar'), 'only-params');
+
+        // Verify get() sends that exact query to the server
+        nock('https://test.host.com')
+            .get('/api/job')
+            .query({ foo: 'from-url', bar: 'only-params' })
+            .reply(200, { data: { ok: true } });
+
+        const res = await ST.get('/job?foo=from-url', { foo: 'from-params', bar: 'only-params' });
+        assert.strictEqual((res as any).ok, true);
+
+        // Verify getAll() also respects URL-wins through the Paginator
+        nock('https://test.host.com')
+            .get('/api/job')
+            .query({ foo: 'from-url', bar: 'only-params', page: '1' })
+            .reply(200, { data: { items: [{ id: 1 }], totalPages: 1 } });
+
+        const items = await ST.getAll('/job?foo=from-url', 'items', { foo: 'from-params', bar: 'only-params' }).toArray();
+        assert.strictEqual(items.length, 1);
+    });
+
+    it('handles boolean and numeric params correctly', function() {
+        const ST = makeParseUrlClient();
+        const parse = (path: string, params?: Record<string, any>) =>
+            queryOf(ST['parseUrl'](path, params)).get('v');
+
+        // URL path values are preserved as-is
+        assert.strictEqual(parse('/test?v=true'), 'true');
+        assert.strictEqual(parse('/test?v=false'), 'false');
+        assert.strictEqual(parse('/test?v=1'), '1');
+        assert.strictEqual(parse('/test?v=0'), '0');
+
+        // Boolean params convert to '1'/'0'
+        assert.strictEqual(parse('/test', { v: true }), '1');
+        assert.strictEqual(parse('/test', { v: false }), '0');
+
+        // Number params stringify
+        assert.strictEqual(parse('/test', { v: 1 }), '1');
+        assert.strictEqual(parse('/test', { v: 0 }), '0');
+
+        // String params pass through
+        assert.strictEqual(parse('/test', { v: 'true' }), 'true');
+        assert.strictEqual(parse('/test', { v: 'false' }), 'false');
     });
 
     it('get() sends the merged query string to the server', async function() {
@@ -629,20 +675,6 @@ describe('ServicetradeClient - GET query params (parseUrl)', function() {
             token: 'preset-token',
         });
         const res = await ST.get('/job?page=1', { officeIds: [10, 20] });
-        assert.strictEqual((res as any).ok, true);
-    });
-
-    it('get() keeps URL query when it conflicts with params', async function() {
-        nock('https://test.host.com')
-            .get('/api/job')
-            .query({ filter: 'url-value', other: 'y' })
-            .reply(200, { data: { ok: true } });
-
-        const ST = new ServicetradeClient({
-            baseUrl: 'https://test.host.com',
-            token: 'preset-token',
-        });
-        const res = await ST.get('/job?filter=url-value', { filter: 'param-value', other: 'y' });
         assert.strictEqual((res as any).ok, true);
     });
 });

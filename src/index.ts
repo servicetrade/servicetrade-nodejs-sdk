@@ -58,7 +58,7 @@ function _sanitizeUrl(baseUrl: string, apiPrefix: string) {
 
 /** ServiceTrade query lists are comma-separated (e.g. `officeIds=1,2,3`). */
 function _wrangleParamValue(
-    value: string | number | readonly (string | number)[] | null | undefined,
+    value: string | number | boolean | readonly (string | number)[] | null | undefined,
 ): string | null {
     if (value === undefined || value === null) {
         return null;
@@ -68,6 +68,9 @@ function _wrangleParamValue(
             return null;
         }
         return value.map(String).join(',');
+    }
+    if (typeof value === 'boolean') {
+        return value ? '1' : '0';
     }
     if (typeof value === 'number') {
         return String(value);
@@ -272,7 +275,7 @@ export default class ServicetradeClient {
 
     private parseUrl(
         urlString: string,
-        params: Record<string, string | number | readonly (string | number)[] | null | undefined> = {},
+        params: Record<string, string | number | boolean | readonly (string | number)[] | null | undefined> = {},
     ): string {
         const url = new URL(_stripLeadingSlash(urlString), this.sanitizedBaseUrl);
         for (const [key, value] of Object.entries(params)) {
@@ -364,14 +367,7 @@ export class Paginator {
         let totalPages = 1; // assume at least one page
 
         while (page <= totalPages) {
-            const queryString = new URLSearchParams({
-                ...Object.fromEntries(
-                    Object.entries(this.params).map(([k, v]) => [k, String(v)])
-                ),
-                page: String(page),
-            }).toString();
-
-            const response = await this.client.get(`${this.path}?${queryString}`);
+            const response = await this.client.get(this.path, { ...this.params, page });
 
             if (!response || typeof response !== 'object') {
                 return;

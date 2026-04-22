@@ -1,6 +1,6 @@
 import nock from 'nock';
 import assert from 'assert';
-import ServicetradeClient from '../src/index';
+import ServicetradeClient, { Paginator } from '../src/index';
 
 /** Build a fake JWT with a specific exp claim (seconds from now) */
 function makeFakeJwt(expiresInSeconds: number): string {
@@ -95,6 +95,7 @@ describe('ServicetradeClient - Constructor tests', function() {
         assert.strictEqual(typeof client.login, 'function');
         assert.strictEqual(typeof client.logout, 'function');
         assert.strictEqual(typeof client.get, 'function');
+        assert.strictEqual(typeof client.getAll, 'function');
         assert.strictEqual(typeof client.post, 'function');
         assert.strictEqual(typeof client.put, 'function');
         assert.strictEqual(typeof client.delete, 'function');
@@ -543,6 +544,141 @@ describe('ServicetradeClient - Logout tests', function() {
     });
 });
 
+describe('ServicetradeClient - GET query params (parseUrl)', function() {
+    /** Token-only client avoids login; parseUrl is exercised the same as via get(). */
+    function makeParseUrlClient() {
+        return new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            token: 'preset-token',
+        });
+    }
+
+    function queryOf(fullUrl: string): URLSearchParams {
+        return new URL(fullUrl).searchParams;
+    }
+
+    it('casts array values to comma-separated lists', function() {
+        const ST = makeParseUrlClient();
+        const fullUrl = ST['parseUrl']('/job', {
+            officeIds: [1, 2, 3],
+            empty: [],
+        });
+        const q = queryOf(fullUrl);
+        assert.strictEqual(q.get('officeIds'), '1,2,3');
+        assert.strictEqual(q.has('empty'), false);
+    });
+
+    it('accepts booleans and ignores unsupported param types', function() {
+        const ST = makeParseUrlClient();
+        const params: Record<string, any> = {
+            kept: 'x',
+            isVendor: true,
+            isCustomer: false,
+            asObject: { nested: 1 },
+            asFn: () => {},
+            asDate: new Date(0),
+        };
+        const fullUrl = ST['parseUrl']('/job', params);
+        const q = queryOf(fullUrl);
+        assert.strictEqual(q.get('kept'), 'x');
+        assert.strictEqual(q.get('isVendor'), '1');
+        assert.strictEqual(q.get('isCustomer'), '0');
+        assert.strictEqual(q.has('asObject'), false);
+        assert.strictEqual(q.has('asFn'), false);
+        assert.strictEqual(q.has('asDate'), false);
+    });
+
+    it('accepts query params only on the path string', function() {
+        const ST = makeParseUrlClient();
+        const fullUrl = ST['parseUrl']('/job?status=scheduled&locationId=456');
+        const q = queryOf(fullUrl);
+        assert.strictEqual(q.get('status'), 'scheduled');
+        assert.strictEqual(q.get('locationId'), '456');
+    });
+
+    it('accepts query params only in the params object', function() {
+        const ST = makeParseUrlClient();
+        const fullUrl = ST['parseUrl']('/job', { status: 'scheduled', locationId: 456 });
+        const q = queryOf(fullUrl);
+        assert.strictEqual(q.get('status'), 'scheduled');
+        assert.strictEqual(q.get('locationId'), '456');
+    });
+
+    it('merges path query string with params object when keys do not overlap', function() {
+        const ST = makeParseUrlClient();
+        const fullUrl = ST['parseUrl']('/job?fromUrl=1', { fromParams: '2' });
+        const q = queryOf(fullUrl);
+        assert.strictEqual(q.get('fromUrl'), '1');
+        assert.strictEqual(q.get('fromParams'), '2');
+    });
+
+    it('when the same key appears in the URL and params, the URL value wins', async function() {
+        const ST = makeParseUrlClient();
+
+        // Verify parseUrl produces correct result
+        const fullUrl = ST['parseUrl']('/job?foo=from-url', { foo: 'from-params', bar: 'only-params' });
+        const q = queryOf(fullUrl);
+        assert.strictEqual(q.get('foo'), 'from-url');
+        assert.strictEqual(q.get('bar'), 'only-params');
+
+        // Verify get() sends that exact query to the server
+        nock('https://test.host.com')
+            .get('/api/job')
+            .query({ foo: 'from-url', bar: 'only-params' })
+            .reply(200, { data: { ok: true } });
+
+        const res = await ST.get('/job?foo=from-url', { foo: 'from-params', bar: 'only-params' });
+        assert.strictEqual((res as any).ok, true);
+
+        // Verify getAll() also respects URL-wins through the Paginator
+        nock('https://test.host.com')
+            .get('/api/job')
+            .query({ foo: 'from-url', bar: 'only-params', page: '1' })
+            .reply(200, { data: { items: [{ id: 1 }], totalPages: 1 } });
+
+        const items = await ST.getAll('/job?foo=from-url', 'items', { foo: 'from-params', bar: 'only-params' }).toArray();
+        assert.strictEqual(items.length, 1);
+    });
+
+    it('handles boolean and numeric params correctly', function() {
+        const ST = makeParseUrlClient();
+        const parse = (path: string, params?: Record<string, any>) =>
+            queryOf(ST['parseUrl'](path, params)).get('v');
+
+        // URL path values are preserved as-is
+        assert.strictEqual(parse('/test?v=true'), 'true');
+        assert.strictEqual(parse('/test?v=false'), 'false');
+        assert.strictEqual(parse('/test?v=1'), '1');
+        assert.strictEqual(parse('/test?v=0'), '0');
+
+        // Boolean params convert to '1'/'0'
+        assert.strictEqual(parse('/test', { v: true }), '1');
+        assert.strictEqual(parse('/test', { v: false }), '0');
+
+        // Number params stringify
+        assert.strictEqual(parse('/test', { v: 1 }), '1');
+        assert.strictEqual(parse('/test', { v: 0 }), '0');
+
+        // String params pass through
+        assert.strictEqual(parse('/test', { v: 'true' }), 'true');
+        assert.strictEqual(parse('/test', { v: 'false' }), 'false');
+    });
+
+    it('get() sends the merged query string to the server', async function() {
+        nock('https://test.host.com')
+            .get('/api/job')
+            .query({ officeIds: '10,20', page: '1' })
+            .reply(200, { data: { ok: true } });
+
+        const ST = new ServicetradeClient({
+            baseUrl: 'https://test.host.com',
+            token: 'preset-token',
+        });
+        const res = await ST.get('/job?page=1', { officeIds: [10, 20] });
+        assert.strictEqual((res as any).ok, true);
+    });
+});
+
 describe('ServicetradeClient - Get tests', function() {
     const testJobId = 100;
 
@@ -927,5 +1063,324 @@ describe('ServicetradeClient - Refresh mutex', function() {
         assert.ok(r1, 'First call returned data');
         assert.ok(r2, 'Second call returned data');
         assert.ok(r3, 'Third call returned data');
+    });
+});
+
+describe('Paginator', function() {
+
+    it('Iterates over a single page of results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }, { id: 2 }],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 2);
+        assert.strictEqual(items[0].id, 1);
+        assert.strictEqual(items[1].id, 2);
+    });
+
+    it('Iterates over multiple pages of results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }, { id: 2 }],
+                    totalPages: 3,
+                }
+            })
+            .get('/api/job')
+            .query({ page: '2' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 3 }, { id: 4 }],
+                    totalPages: 3,
+                }
+            })
+            .get('/api/job')
+            .query({ page: '3' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 5 }],
+                    totalPages: 3,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 5);
+        assert.deepStrictEqual(
+            items.map(i => i.id),
+            [1, 2, 3, 4, 5]
+        );
+    });
+
+    it('Handles empty results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 0);
+    });
+
+    it('Handles missing items key', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs');
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 0);
+    });
+
+    it('Passes custom params along with page parameter', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ status: 'scheduled', page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const paginator = new Paginator(client, '/job', 'jobs', {
+            params: { status: 'scheduled' },
+        });
+        const items: any[] = [];
+        for await (const item of paginator) {
+            items.push(item);
+        }
+
+        assert.strictEqual(items.length, 1);
+        assert.strictEqual(items[0].id, 1);
+    });
+
+    it('toArray() returns all items across pages', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 1 }, { id: 2 }],
+                    totalPages: 2,
+                }
+            })
+            .get('/api/job')
+            .query({ page: '2' })
+            .reply(200, {
+                data: {
+                    jobs: [{ id: 3 }],
+                    totalPages: 2,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const items = await new Paginator(client, '/job', 'jobs').toArray();
+
+        assert.strictEqual(items.length, 3);
+        assert.deepStrictEqual(
+            items.map(i => i.id),
+            [1, 2, 3]
+        );
+    });
+
+    it('toArray() returns empty array when no results', async function() {
+        nock('https://test.host.com')
+            .post('/api/oauth2/token')
+            .reply(200, { access_token: 'test-token' })
+            .get('/api/job')
+            .query({ page: '1' })
+            .reply(200, {
+                data: {
+                    jobs: [],
+                    totalPages: 1,
+                }
+            });
+
+        const client = new ServicetradeClient(clientCredentialsOptions);
+        await client.login();
+
+        const items = await new Paginator(client, '/job', 'jobs').toArray();
+
+        assert.strictEqual(items.length, 0);
+    });
+
+    describe('client.getAll()', function() {
+        it('returns a Paginator instance', function() {
+            const client = new ServicetradeClient(clientCredentialsOptions);
+            const paginator = client.getAll('/job', 'jobs');
+            assert.ok(paginator instanceof Paginator);
+        });
+
+        it('matches new Paginator(client, path, itemsKey, { params })', async function() {
+            const pageReply = {
+                data: {
+                    jobs: [{ id: 99 }],
+                    totalPages: 1,
+                },
+            };
+            nock('https://test.host.com')
+                .post('/api/oauth2/token')
+                .reply(200, { access_token: 'test-token' })
+                .get('/api/job')
+                .query({ status: 'scheduled', page: '1' })
+                .reply(200, pageReply)
+                .get('/api/job')
+                .query({ status: 'scheduled', page: '1' })
+                .reply(200, pageReply);
+
+            const client = new ServicetradeClient(clientCredentialsOptions);
+            await client.login();
+
+            const fromGetAll = await client
+                .getAll('/job', 'jobs', { status: 'scheduled' })
+                .toArray();
+            const fromCtor = await new Paginator(client, '/job', 'jobs', {
+                params: { status: 'scheduled' },
+            }).toArray();
+
+            assert.deepStrictEqual(fromGetAll, fromCtor);
+        });
+
+        it('iterates using the given path and items key', async function() {
+            nock('https://test.host.com')
+                .post('/api/oauth2/token')
+                .reply(200, { access_token: 'test-token' })
+                .get('/api/job')
+                .query({ page: '1' })
+                .reply(200, {
+                    data: {
+                        jobs: [{ id: 7 }, { id: 8 }],
+                        totalPages: 1,
+                    },
+                });
+
+            const client = new ServicetradeClient(clientCredentialsOptions);
+            await client.login();
+
+            const items: any[] = [];
+            for await (const item of client.getAll('/job', 'jobs')) {
+                items.push(item);
+            }
+
+            assert.strictEqual(items.length, 2);
+            assert.deepStrictEqual(
+                items.map((i) => i.id),
+                [7, 8],
+            );
+        });
+
+        it('passes the params argument through to the paginator', async function() {
+            nock('https://test.host.com')
+                .post('/api/oauth2/token')
+                .reply(200, { access_token: 'test-token' })
+                .get('/api/job')
+                .query({ status: 'scheduled', page: '1' })
+                .reply(200, {
+                    data: {
+                        jobs: [{ id: 42 }],
+                        totalPages: 1,
+                    },
+                });
+
+            const client = new ServicetradeClient(clientCredentialsOptions);
+            await client.login();
+
+            const items: any[] = [];
+            for await (const item of client.getAll('/job', 'jobs', { status: 'scheduled' })) {
+                items.push(item);
+            }
+
+            assert.strictEqual(items.length, 1);
+            assert.strictEqual(items[0].id, 42);
+        });
+
+        it('toArray() works on the paginator returned by getAll', async function() {
+            nock('https://test.host.com')
+                .post('/api/oauth2/token')
+                .reply(200, { access_token: 'test-token' })
+                .get('/api/job')
+                .query({ page: '1' })
+                .reply(200, {
+                    data: {
+                        jobs: [{ id: 1 }],
+                        totalPages: 1,
+                    },
+                });
+
+            const client = new ServicetradeClient(clientCredentialsOptions);
+            await client.login();
+
+            const items = await client.getAll('/job', 'jobs').toArray();
+
+            assert.strictEqual(items.length, 1);
+            assert.strictEqual(items[0].id, 1);
+        });
     });
 });
